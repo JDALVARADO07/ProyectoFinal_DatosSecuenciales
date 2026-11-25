@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+
+# Model weights (archivos grandes, descargar con download_weights.py)
+weights/
+
+# Videos locales y datos de prueba grandes
+data_videos/
+
+# Archivos de configuración local
+.python-version
+pyproject.toml
+
+# PDFs y documentos
+*.pdf

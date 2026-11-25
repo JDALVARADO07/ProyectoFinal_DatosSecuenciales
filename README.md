@@ -128,23 +128,25 @@ En **TR-DETR**, los tensores **Query ($Q$)**, **Key ($K$)** y **Value ($V$)** se
 ### 5.1 Estructura del Repositorio
 
 ```text
-Prueba/
+proyectofinal/
 ├── tr_detr_model.py      # Arquitectura PyTorch explícita de TR-DETR (Encoder-Decoder, Q, K, V, HD2MR, MR2HD)
 ├── inference.py          # Pipeline de preprocesamiento con FFmpeg, motor de inferencia y CLI
-├── app.py                # Interfaz gráfica interactiva en Streamlit (reproductor, curvas SVG y mapas Q,K,V)
+├── app.py                # Interfaz Streamlit con tres pestañas: Presentación, Inferencia y Mapas Q,K,V
+├── slides.py             # Presentación interactiva de la arquitectura, renderizada como componente HTML
 ├── app_tkinter.py        # Interfaz gráfica nativa de escritorio en Tkinter (sin dependencias externas)
 ├── download_weights.py   # Script para descargar clip_tr_detr_qvhighlight.ckpt desde Zenodo (13960580)
-├── requirements.txt      # Dependencias del proyecto
+├── requirements.txt      # Dependencias del proyecto (streamlit >= 1.33, torch, numpy, etc.)
+├── assets/               # Recursos gráficos (diagrama de fases de la arquitectura)
 ├── sample_data/          # Video MP4 de prueba autogenerado con 3 escenas temporales (30 s)
 └── weights/              # Carpeta destino para el checkpoint preentrenado (.ckpt)
 ```
 
 ### 5.2 Pasos para Ejecutar el Proyecto
 
-#### Paso 1: Activar el entorno virtual e instalar dependencias
+#### Paso 1: Crear entorno virtual e instalar dependencias
 ```powershell
-& "c:\Users\jalvarado\Documents\ESPECIALIZACION IA\.venv\Scripts\Activate.ps1"
-cd "c:\Users\jalvarado\Documents\ESPECIALIZACION IA\Procesamiento de Datos Secuenciales con Deep Learning\Semana8\Prueba"
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -152,7 +154,7 @@ pip install -r requirements.txt
 ```powershell
 python download_weights.py
 ```
-*(El sistema funciona inmediatamente tanto con el checkpoint descargado en `weights/clip_tr_detr_qvhighlight.ckpt` como en modo autónomo con la arquitectura PyTorch calibrada).*
+*(El sistema funciona tanto con el checkpoint descargado en `weights/clip_tr_detr_qvhighlight.ckpt` como en modo autónomo con la arquitectura PyTorch calibrada).*
 
 #### Paso 3: Ejecutar la inferencia por consola (CLI)
 ```powershell
@@ -164,6 +166,7 @@ python inference.py --query "El hombre abre la puerta del carro"
   ```powershell
   streamlit run app.py
   ```
+  La interfaz se organiza en tres pestañas: **Presentación** (diapositivas de la arquitectura), **Inferencia** (carga de video, consulta y resultados) y **Tensores Q, K, V** (mapas de atención del modelo).
 - **Opción B — Interfaz de Escritorio Nativa en Tkinter (Ejecución instantánea):**
   ```powershell
   python app_tkinter.py

@@ -3,6 +3,6 @@ numpy>=1.24.0
 imageio-ffmpeg>=0.4.9
 requests>=2.31.0
 tqdm>=4.65.0
-streamlit>=1.32.0
+streamlit>=1.33.0
 # Opcional: librería oficial Lighthouse de LINE para evaluación con pesos de Zenodo
 # git+https://github.com/line/lighthouse.git

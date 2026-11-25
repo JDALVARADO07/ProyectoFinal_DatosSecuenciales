@@ -385,7 +385,7 @@ class TRDETRInferenceEngine:
                     device=self.device,
                     feature_name="clip",
                 )
-                self.engine_status = "Motor Oficial line/lighthouse + Pesos Zenodo (clip_tr_detr_qvhighlight.ckpt)"
+                self.engine_status = "Modelo TR-DETR listo — pesos preentrenados QVHighlights (CLIP ViT-B/32)"
             except Exception:
                 self.lighthouse_predictor = None
 
