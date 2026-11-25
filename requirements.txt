@@ -1,8 +1,13 @@
 torch>=2.0.0
-numpy>=1.24.0
+numpy>=1.24.0,<2
 imageio-ffmpeg>=0.4.9
 requests>=2.31.0
 tqdm>=4.65.0
 streamlit>=1.33.0
-# Opcional: librería oficial Lighthouse de LINE para evaluación con pesos de Zenodo
-# git+https://github.com/line/lighthouse.git
+# pyarrow >= 16 exige NumPy 2.x y rompe la combinación con torch 2.5 / NumPy 1.26
+pyarrow<16
+# Necesario para leer el checkpoint oficial de Zenodo con torch.load
+easydict>=1.9
+# Inferencia oficial con Lighthouse (opcional):
+#   1) pip install -r requirements-lighthouse.txt
+#   2) pip install --no-deps git+https://github.com/line/lighthouse.git

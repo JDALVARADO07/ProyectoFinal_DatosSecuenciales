@@ -183,10 +183,17 @@ pred  = model.predict("A woman walking in a market", video)
     {
         "title": "Resultados propios",
         "body": """
-*(Agregar capturas de la demostración)*
+Video real de 30 s (`demo_real_30s.mp4`) con el modelo oficial **Lighthouse + CLIP ViT-B/32**:
 
-- ✓ Caso exitoso: intervalo predicho vs. intervalo real anotado.
-- ✗ Caso límite: consulta que no corresponde a ningún segmento → curva de relevancia plana.
+| Consulta | Top-1 predicho | Confianza | Escena real |
+|----------|----------------|-----------|-------------|
+| `Car driving on the road` | 0.07–12.46 s | 97.3 % | 0–10 s |
+| `A man opens the door of a car` | 8.29–19.91 s | 97.2 % | 10–20 s |
+| `An old man walking in the park` | 21.05–30.0 s | 99.5 % | 20–30 s |
+
+- ✓ El modelo localiza correctamente las tres escenas del video.
+- ✓ La curva de relevancia concentra su pico en el intervalo predicho.
+- ⚠ El modelo siempre devuelve un intervalo, incluso para consultas que no aparecen en el video; la confianza no debe interpretarse como probabilidad calibrada.
 """,
     },
     {

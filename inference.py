@@ -12,7 +12,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,6 +61,95 @@ def get_ffmpeg_binary() -> str:
         if venv_ffmpeg.exists():
             return str(venv_ffmpeg)
         return "ffmpeg"
+
+
+def _prepare_lighthouse_windows() -> None:
+    """
+    Adapta Lighthouse para Windows antes de importarlo:
+    1. ffmpeg-python busca un ejecutable `ffmpeg` en el PATH; creamos un shim
+       a partir del binario que ya trae imageio-ffmpeg.
+    2. El loader de Lighthouse usa `ffprobe`, que no viene con imageio-ffmpeg.
+       Sustituimos `_video_info` por una lectura de metadatos con OpenCV o,
+       si no está disponible, con imageio-ffmpeg.
+    """
+    # Evita que transformers/msclap carguen TensorFlow (más rápido y silencioso).
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+    try:
+        import imageio_ffmpeg
+
+        if shutil.which("ffmpeg") is None:
+            shim_dir = Path(tempfile.gettempdir()) / "tr_detr_ffmpeg"
+            shim_dir.mkdir(parents=True, exist_ok=True)
+            shim_exe = shim_dir / "ffmpeg.exe"
+            if not shim_exe.exists():
+                try:
+                    os.link(imageio_ffmpeg.get_ffmpeg_exe(), shim_exe)
+                except OSError:
+                    shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(), shim_exe)
+            os.environ["PATH"] = str(shim_dir) + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
+    try:
+        from lighthouse.frame_loaders.base_loader import BaseLoader
+
+        if getattr(BaseLoader, "_tr_detr_windows_patch", False):
+            return
+
+        def _video_info(self, video_path: str):
+            try:
+                import cv2
+
+                cap = cv2.VideoCapture(str(video_path))
+                if not cap.isOpened():
+                    return None
+                fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+                n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                duration = n_frames / fps if fps > 0 and n_frames > 0 else 0.0
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                cap.release()
+                if duration <= 0:
+                    duration = get_video_duration(str(video_path))
+                return {
+                    "duration": float(duration),
+                    "frames_length": n_frames,
+                    "fps": max(1, int(round(fps))),
+                    "height": height,
+                    "width": width,
+                }
+            except Exception:
+                pass
+
+            try:
+                import imageio_ffmpeg
+
+                gen = imageio_ffmpeg.read_frames(str(video_path))
+                meta = next(gen)
+                try:
+                    gen.close()
+                except Exception:
+                    pass
+                fps = float(meta.get("fps") or 30.0)
+                duration = float(meta.get("duration") or 0.0)
+                width, height = meta.get("size") or (224, 224)
+                if duration <= 0:
+                    duration = get_video_duration(str(video_path))
+                return {
+                    "duration": duration,
+                    "frames_length": int(duration * fps),
+                    "fps": max(1, int(round(fps))),
+                    "height": int(height),
+                    "width": int(width),
+                }
+            except Exception:
+                return None
+
+        BaseLoader._video_info = _video_info
+        BaseLoader._tr_detr_windows_patch = True
+    except Exception:
+        pass
 
 
 def get_video_duration(video_path: str) -> float:
@@ -379,15 +470,21 @@ class TRDETRInferenceEngine:
         self.lighthouse_predictor = None
         if self.ckpt_path and os.path.exists(self.ckpt_path):
             try:
+                _prepare_lighthouse_windows()
                 from lighthouse.models import TRDETRPredictor
                 self.lighthouse_predictor = TRDETRPredictor(
                     self.ckpt_path,
                     device=self.device,
                     feature_name="clip",
                 )
-                self.engine_status = "Modelo TR-DETR listo — pesos preentrenados QVHighlights (CLIP ViT-B/32)"
-            except Exception:
+                self.engine_status = (
+                    "Modelo TR-DETR oficial — pesos QVHighlights + CLIP ViT-B/32 (Lighthouse)"
+                )
+            except Exception as exc:
                 self.lighthouse_predictor = None
+                self.engine_status = (
+                    f"Arquitectura PyTorch TR-DETR (Lighthouse no disponible: {exc})"
+                )
 
     @torch.no_grad()
     def predict(self, video_path: str, query: str) -> Dict[str, Any]:
@@ -451,7 +548,10 @@ class TRDETRInferenceEngine:
                 if "pred_saliency_scores" in lh_pred:
                     lh_sal = np.array(lh_pred["pred_saliency_scores"], dtype=np.float32)
                     if len(lh_sal) == num_clips:
-                        saliency_final = lh_sal
+                        lo, hi = float(lh_sal.min()), float(lh_sal.max())
+                        if hi - lo > 1e-6:
+                            lh_sal = (lh_sal - lo) / (hi - lo)
+                        saliency_final = np.clip(lh_sal, 0.0, 1.0)
             except Exception:
                 lighthouse_intervals = None
 

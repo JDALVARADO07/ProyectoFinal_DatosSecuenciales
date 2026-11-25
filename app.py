@@ -215,10 +215,10 @@ def main():
                 preset_query = st.selectbox(
                     "Consultas de ejemplo:",
                     options=[
-                        "The man opens the car door",
-                        "A person is speaking in front of the camera",
-                        "Person walking in the park",
+                        "A man opens the door of a car",
                         "Car driving on the road",
+                        "An old man walking in the park",
+                        "A person is speaking in front of the camera",
                     ],
                 )
             with col_q:
@@ -262,6 +262,10 @@ def main():
                     duration=result["video_duration_sec"],
                 )
                 st.markdown(svg_chart, unsafe_allow_html=True)
+                st.caption(
+                    "Curva sólida: relevancia final por clip. Curva punteada: referencia inicial "
+                    "de la reimplementación didáctica."
+                )
 
                 st.subheader(f"Top-{top_k} propuestas del Decoder")
                 table_rows = []
@@ -283,6 +287,11 @@ def main():
         if qkv_result is None:
             st.info("Suba un video y ejecute la inferencia para ver los mapas de atención.")
         else:
+            st.caption(
+                "Los mapas Q/K/V se calculan con la reimplementación didáctica de la arquitectura "
+                "(tr_detr_model.py). Las predicciones de intervalo y relevancia usan el modelo "
+                "oficial cuando Lighthouse está activo."
+            )
             clip_labels = [
                 f"C{i+1} ({int(i*clip_duration)}-{int((i+1)*clip_duration)}s)"
                 for i in range(qkv_result["num_clips"])

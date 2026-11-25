@@ -136,8 +136,9 @@ proyectofinal/
 ├── slides.py             # Presentación interactiva de la arquitectura, renderizada como componente HTML
 ├── download_weights.py   # Script para descargar clip_tr_detr_qvhighlight.ckpt desde Zenodo (13960580)
 ├── requirements.txt      # Dependencias del proyecto (streamlit >= 1.33, torch, numpy, etc.)
+├── requirements-lighthouse.txt # Dependencias extra para inferencia oficial con CLIP + Lighthouse
 ├── assets/               # Recursos gráficos (diagrama de fases de la arquitectura)
-├── sample_data/          # Video MP4 de prueba autogenerado con 3 escenas temporales (30 s)
+├── sample_data/          # Videos de prueba: demo_real_30s.mp4 (real, 3 escenas) y demo_video_eventos.mp4 (bloques de color)
 └── weights/              # Carpeta destino para el checkpoint preentrenado (.ckpt)
 ```
 
@@ -156,6 +157,21 @@ python download_weights.py
 ```
 *(El sistema funciona tanto con el checkpoint descargado en `weights/clip_tr_detr_qvhighlight.ckpt` como en modo autónomo con la arquitectura PyTorch calibrada).*
 
+#### Paso 2b: Habilitar la inferencia oficial con Lighthouse
+Para que la app use realmente los pesos oficiales y las características CLIP (y no solo la reimplementación didáctica):
+
+```powershell
+pip install -r requirements-lighthouse.txt
+pip install --no-deps git+https://github.com/line/lighthouse.git
+```
+
+La primera vez que se ejecuta, Lighthouse descarga el modelo CLIP ViT-B/32 (~350 MB). La app muestra en la barra lateral:
+
+- **“Modelo TR-DETR oficial — pesos QVHighlights + CLIP ViT-B/32 (Lighthouse)”** cuando la inferencia oficial está activa.
+- Un mensaje de **“Lighthouse no disponible”** cuando no lo está; en ese caso se usa la reimplementación didáctica como respaldo.
+
+En Windows, `inference.py` adapta automáticamente Lighthouse: crea un shim de FFmpeg a partir de `imageio-ffmpeg` y evita el uso de `ffprobe` en el cargador de frames.
+
 #### Paso 3: Ejecutar la inferencia por consola (CLI)
 ```powershell
 python inference.py --query "El hombre abre la puerta del carro"
@@ -166,6 +182,25 @@ python inference.py --query "El hombre abre la puerta del carro"
 streamlit run app.py
 ```
 La interfaz se organiza en tres pestañas: **Presentación** (diapositivas de la arquitectura), **Inferencia** (carga de video, consulta y resultados) y **Tensores Q, K, V** (mapas de atención del modelo).
+
+#### Demostración recomendada
+Con Lighthouse activo, usar el video real compuesto de 30 segundos:
+
+```
+sample_data/demo_real_30s.mp4
+```
+
+Contiene tres escenas reales: `[0–10 s]` carro conduciendo, `[10–20 s]` hombre abriendo la puerta de un carro en un parqueadero y `[20–30 s]` anciano caminando en un parque.
+
+Consultas y resultados verificados:
+
+| Consulta | Top-1 predicho | Confianza | Escena real |
+|---|---|---|---|
+| `Car driving on the road` | 0.07–12.46 s | 97.3 % | 0–10 s |
+| `A man opens the door of a car` | 8.29–19.91 s | 97.2 % | 10–20 s |
+| `An old man walking in the park` | 21.05–30.0 s | 99.5 % | 20–30 s |
+
+> El video `sample_data/demo_video_eventos.mp4` (bloques de color) sigue disponible para pruebas del pipeline, pero **no es adecuado para la demo con el modelo oficial**: CLIP no encuentra semántica real en bloques de color.
 
 ---
 
@@ -191,13 +226,28 @@ En el conjunto de prueba de **QVHighlights** (videos reales de noticias y vlogs 
 2. **Impacto de la reciprocidad en Highlight Detection ($\text{HIT}@1$):** El módulo `MR2HD` basado en GRU eleva el $\text{HIT}@1$ a **$63.42\%$**, confirmando que conocer la región acotada del momento reduce falsos positivos en clips aislados fuera del intervalo.
 
 ### 6.2 Verificación Experimental en Inferencia Local
-Al ejecutar `python inference.py --query "El hombre abre la puerta del carro"` sobre el video de prueba de 30 segundos (3 escenas de 10 segundos: `[0-10s]` conducción en vía, `[10-20s]` apertura de puerta del vehículo, `[20-30s]` persona caminando en parque):
-- **Trazabilidad dimensional verificada:**
-  - Entrada visual $F_v$: `(1, 16, 512)` $\rightarrow$ alineada a `(1, 16, 256)`.
-  - Entrada textual $F_t$: `(1, 9, 512)` para los 9 tokens `['<sos>', 'el', 'hombre', 'abre', 'la', 'puerta', 'del', 'carro', '<eos>']` $\rightarrow$ alineada a `(1, 9, 256)`.
-  - Tensores de Cross-Attention V2T: $Q_v \in \mathbb{R}^{1 \times 8 \times 16 \times 32}$, $K_t, V_t \in \mathbb{R}^{1 \times 8 \times 9 \times 32}$.
-  - Tensores de Cross-Attention en el Decoder: $Q_{\text{dec}} \in \mathbb{R}^{1 \times 8 \times 10 \times 32}$ (*10 Moment Queries*), $K_{\text{enc}}, V_{\text{enc}} \in \mathbb{R}^{1 \times 8 \times 16 \times 32}$.
-- **Localización obtenida:** La `Moment Query #01` localiza el intervalo correspondiente a la segunda escena (`[10.00s - 20.00s]`) en el primer lugar del ranking (`Top-1`), acompañada de un pico pronunciado en la curva $S_{\text{final}}$ de *Highlight Detection* entre los clips 6 y 10.
+Con Lighthouse activo, se ejecutó:
+
+```powershell
+python inference.py --video sample_data/demo_real_30s.mp4 --query "A man opens the door of a car"
+```
+
+El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro conduciendo, `[10–20 s]` hombre abriendo la puerta de un carro y `[20–30 s]` anciano caminando en un parque.
+
+- **Trazabilidad dimensional verificada** (15 clips de 2 s, 10 tokens de la consulta):
+  - Entrada visual $F_v$: `(1, 15, 512)` $\rightarrow$ alineada a `(1, 15, 256)`.
+  - Entrada textual $F_t$: `(1, 10, 512)` para los tokens `['<sos>', 'a', 'man', 'opens', 'the', 'door', 'of', 'a', 'car', '<eos>']` $\rightarrow$ alineada a `(1, 10, 256)`.
+  - Cross-Attention V2T: $Q_v \in \mathbb{R}^{1 \times 8 \times 15 \times 32}$, $K_t, V_t \in \mathbb{R}^{1 \times 8 \times 10 \times 32}$.
+  - Cross-Attention del Decoder: $Q_{\text{dec}} \in \mathbb{R}^{1 \times 8 \times 10 \times 32}$ (*10 Moment Queries*), $K_{\text{enc}}, V_{\text{enc}} \in \mathbb{R}^{1 \times 8 \times 15 \times 32}$.
+- **Localización obtenida con el modelo oficial:** Top-1 `[8.29 s – 19.91 s]` con **97.2 %** de confianza, correspondiente a la segunda escena (`[10–20 s]`). La curva de relevancia concentra su pico entre los clips 5 y 10.
+
+| Consulta | Top-1 predicho | Confianza | Escena real |
+|---|---|---|---|
+| `Car driving on the road` | 0.07–12.46 s | 97.3 % | 0–10 s |
+| `A man opens the door of a car` | 8.29–19.91 s | 97.2 % | 10–20 s |
+| `An old man walking in the park` | 21.05–30.0 s | 99.5 % | 20–30 s |
+
+> **Nota:** las predicciones de intervalo y relevancia provienen del modelo oficial (Lighthouse + checkpoint de QVHighlights + CLIP ViT-B/32). Los mapas Q/K/V que muestra la pestaña de atención se calculan con la reimplementación didáctica de `tr_detr_model.py`, porque Lighthouse no expone esas matrices internas.
 
 ---
 
