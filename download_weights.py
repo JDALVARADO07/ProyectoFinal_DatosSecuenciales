@@ -6,6 +6,7 @@ de Zenodo (https://zenodo.org/records/13960580, licencia MIT / Apache 2.0).
 
 import os
 from pathlib import Path
+from typing import Optional
 import requests
 from tqdm import tqdm
 
