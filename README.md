@@ -3,6 +3,7 @@
 **Proyecto Final — Procesamiento de Datos Secuenciales con Deep Learning**  
 **Especialización en Inteligencia Artificial · Universidad Autónoma de Occidente (UAO)**  
 **Docente:** Dra. Natalie Belandia  
+**Integrantes:** Juliana Campuzano · Jorge Iván González · Juan José Mosquera · David Alvarado  
 
 ---
 
@@ -10,7 +11,7 @@
 
 Encontrar un momento específico dentro de un video de larga duración a partir de una descripción en lenguaje natural (por ejemplo, *"el hombre abre la puerta del carro"*) exige tradicionalmente inspeccionar la grabación de principio a fin de forma manual. En este proyecto se implementa y analiza el flujo de inferencia de **TR-DETR (*Task-Reciprocal Transformer for Joint Moment Retrieval and Highlight Detection*)**, una arquitectura **Transformer Encoder–Decoder** propuesta en **AAAI 2024** que resuelve de manera conjunta dos tareas sobre datos secuenciales multimodales: la **Recuperación de Momentos (*Moment Retrieval*, MR)** y la **Detección de Momentos Destacados (*Highlight Detection*, HD)**.
 
-El sistema recibe como entrada una secuencia temporal de clips de video (extraídos cada $\Delta t = 2.0\text{ s}$ y codificados mediante **CLIP ViT-B/32**) junto con la secuencia de tokens de una consulta en lenguaje natural. A través de un módulo de **Alineación Local-Global (LGAM)**, un bloque de **Atención Cruzada Video-a-Texto (V2T)**, un **Transformer Encoder–Decoder** con $N_q = 10$ *Moment Queries* aprendibles y un mecanismo bidireccional de **Reciprocidad entre Tareas (`HD2MR` y `MR2HD` con celda GRU)**, el modelo predice simultáneamente las coordenadas temporales $[\text{inicio}, \text{fin}]$ del evento buscado y una curva continua de relevancia (*saliency score*) clip por clip. Se presenta una implementación modular en PyTorch junto con dos interfaces gráficas interactivas (**Streamlit** y **Tkinter**) que permiten cargar videos propios, ejecutar consultas en vivo e inspeccionar la creación y dimensiones de los tensores **Query ($Q$)**, **Key ($K$)** y **Value ($V$)** en cada etapa de atención.
+El sistema recibe como entrada una secuencia temporal de clips de video (extraídos cada $\Delta t = 2.0\text{ s}$ y codificados mediante **CLIP ViT-B/32**) junto con la secuencia de tokens de una consulta en lenguaje natural. A través de un módulo de **Alineación Local-Global (LGAM)**, un bloque de **Atención Cruzada Video-a-Texto (V2T)**, un **Transformer Encoder–Decoder** con $N_q = 10$ *Moment Queries* aprendibles y un mecanismo bidireccional de **Reciprocidad entre Tareas (`HD2MR` y `MR2HD` con celda GRU)**, el modelo predice simultáneamente las coordenadas temporales $[\text{inicio}, \text{fin}]$ del evento buscado y una curva continua de relevancia (*saliency score*) clip por clip. Se presenta una implementación modular en PyTorch junto con una interfaz gráfica interactiva en **Streamlit** que permite cargar videos propios, ejecutar consultas en vivo e inspeccionar la creación y dimensiones de los tensores **Query ($Q$)**, **Key ($K$)** y **Value ($V$)** en cada etapa de atención.
 
 ---
 
@@ -119,7 +120,7 @@ En **TR-DETR**, los tensores **Query ($Q$)**, **Key ($K$)** y **Value ($V$)** se
    - **Secuencia Visual ($F_v$):** Cada clip de 2 segundos se codifica en un vector de dimensión $D_v = 512$ (espacio visual CLIP ViT-B/32), conformando el tensor $(1, L_v, 512)$.
    - **Secuencia Textual ($F_t$):** La consulta en lenguaje natural se tokeniza agregando los marcadores especiales de inicio y fin de secuencia (`<sos>`, $w_1, \dots, w_m$, `<eos>`) y se codifica en el tensor $(1, L_t, 512)$.
 3. **Inferencia con Pesos Preentrenados y Trazabilidad en PyTorch:**
-   - El motor `TRDETRInferenceEngine` ([inference.py](file:///c:/Users/jalvarado/Documents/ESPECIALIZACION%20IA/Procesamiento%20de%20Datos%20Secuenciales%20con%20Deep%20Learning/Semana8/Prueba/inference.py)) soporta el archivo de pesos preentrenados `clip_tr_detr_qvhighlight.ckpt` alojado en Zenodo (`record/13960580`) y ejecuta el paso hacia adelante sobre la arquitectura explícita en PyTorch ([tr_detr_model.py](file:///c:/Users/jalvarado/Documents/ESPECIALIZACION%20IA/Procesamiento%20de%20Datos%20Secuenciales%20con%20Deep%20Learning/Semana8/Prueba/tr_detr_model.py)) para extraer tanto las predicciones como las matrices de atención $Q, K, V$.
+   - El motor `TRDETRInferenceEngine` (`inference.py`) soporta el archivo de pesos preentrenados `clip_tr_detr_qvhighlight.ckpt` alojado en Zenodo (`record/13960580`) y ejecuta el paso hacia adelante sobre la arquitectura explícita en PyTorch (`tr_detr_model.py`) para extraer tanto las predicciones como las matrices de atención $Q, K, V$.
 
 ---
 
@@ -133,7 +134,6 @@ proyectofinal/
 ├── inference.py          # Pipeline de preprocesamiento con FFmpeg, motor de inferencia y CLI
 ├── app.py                # Interfaz Streamlit con tres pestañas: Presentación, Inferencia y Mapas Q,K,V
 ├── slides.py             # Presentación interactiva de la arquitectura, renderizada como componente HTML
-├── app_tkinter.py        # Interfaz gráfica nativa de escritorio en Tkinter (sin dependencias externas)
 ├── download_weights.py   # Script para descargar clip_tr_detr_qvhighlight.ckpt desde Zenodo (13960580)
 ├── requirements.txt      # Dependencias del proyecto (streamlit >= 1.33, torch, numpy, etc.)
 ├── assets/               # Recursos gráficos (diagrama de fases de la arquitectura)
@@ -161,16 +161,11 @@ python download_weights.py
 python inference.py --query "El hombre abre la puerta del carro"
 ```
 
-#### Paso 4: Iniciar la Interfaz Gráfica Interactiva (Streamlit o Tkinter)
-- **Opción A — Interfaz Web Interactiva en Streamlit (Recomendada para la sustentación):**
-  ```powershell
-  streamlit run app.py
-  ```
-  La interfaz se organiza en tres pestañas: **Presentación** (diapositivas de la arquitectura), **Inferencia** (carga de video, consulta y resultados) y **Tensores Q, K, V** (mapas de atención del modelo).
-- **Opción B — Interfaz de Escritorio Nativa en Tkinter (Ejecución instantánea):**
-  ```powershell
-  python app_tkinter.py
-  ```
+#### Paso 4: Iniciar la Interfaz Gráfica Interactiva en Streamlit
+```powershell
+streamlit run app.py
+```
+La interfaz se organiza en tres pestañas: **Presentación** (diapositivas de la arquitectura), **Inferencia** (carga de video, consulta y resultados) y **Tensores Q, K, V** (mapas de atención del modelo).
 
 ---
 
