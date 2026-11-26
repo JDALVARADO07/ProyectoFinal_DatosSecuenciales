@@ -533,6 +533,7 @@ pred = model.predict(<span class="s">"A woman walking in a market"</span>, video
 pred[<span class="s">"pred_relevant_windows"</span>]  <span class="c"># [[inicio, fin, confianza], ...]</span>
 pred[<span class="s">"pred_saliency_scores"</span>]   <span class="c"># un puntaje por clip</span></pre>
 {svg_pipeline([("encode_video", "CLIP ❄", C[1]), ("predict", "fases 2–6", C[4]), ("post-proceso", "segundos", C[5])], w=720, h=90)}
+<p class="note">Pesos verificados por MD5 · 7.71 M parámetros · <span class="mono">encode_video</span> 3.4 s · <span class="mono">predict</span> ≈0.1 s por consulta</p>
 """, kicker="Implementación"))
 
     s.append(_slide(
@@ -553,6 +554,28 @@ pred[<span class="s">"pred_saliency_scores"</span>]   <span class="c"># un punta
 </div>""", kicker="Resultados"))
 
     s.append(_slide(
+        "Ablación: qué aporta cada módulo",
+        f"""
+<div class="two">
+  <div>
+    <table class="tbl"><tr><th>Configuración</th><th>R1@0.5</th><th>R1@0.7</th><th>HIT@1</th></tr>
+      <tr><td>base</td><td>57.7</td><td>42.4</td><td>57.4</td></tr>
+      <tr><td>+ LGAM</td><td>63.1</td><td>45.0</td><td>63.9</td></tr>
+      <tr><td>+ VFR</td><td>64.2</td><td>47.6</td><td>64.1</td></tr>
+      <tr><td>LGAM + VFR</td><td>62.1</td><td>47.2</td><td>62.7</td></tr>
+      <tr><td>+ HD2MR</td><td>66.3</td><td>50.7</td><td>64.9</td></tr>
+      <tr class="hl"><td>todos</td><td>67.1</td><td>51.5</td><td>64.8</td></tr></table>
+    <p class="note">Table 4 del artículo · QVHighlights val</p>
+  </div>
+  <div>
+    <ul class="arrows">
+      <li>La <b>alineación</b> (LGAM, VFR) es lo que más aporta por separado: <b>+5.4</b> y <b>+6.5</b> en R1@0.5.</li>
+      <li>La <b>reciprocidad sin alineación</b> apenas mueve la aguja (MR2HD + HD2MR: +2.1, HIT@1 estancado).</li>
+      <li>Con alineación previa, <b>HD2MR</b> suma <b>+4.2</b>; <b>MR2HD</b> suma +1.1 pero <b>baja el HIT@1</b> (62.7 → 59.6).</li>
+    </ul>
+  </div>
+</div>""", kicker="Resultados"))
+    s.append(_slide(
         "Resultados propios",
         f"""
 <table class="tbl"><tr><th>Consulta</th><th>Top-1 predicho</th><th>Confianza</th><th>Escena real</th></tr>
@@ -561,9 +584,10 @@ pred[<span class="s">"pred_saliency_scores"</span>]   <span class="c"># un punta
   <tr><td class="mono">An old man walking in the park</td><td>21.05–30.0 s</td><td>99.5 %</td><td>20–30 s</td></tr></table>
 <p class="note">Video real de 30 s (<span class="mono">demo_real_30s.mp4</span>) · modelo oficial Lighthouse + CLIP ViT-B/32</p>
 <div class="grid2">
-  {_card("✓ Funciona", "<p>Localiza las tres escenas y el pico de la curva cae en el intervalo.</p>", C[5])}
-  {_card("⚠ Cuidado", "<p>Siempre devuelve un intervalo, aunque la frase no aparezca.</p>", C[2])}
-</div>""", kicker="Resultados"))
+  {_card("✓ Localiza", "<p><b>IoU 0.846</b> · R1@0.5 <b>3/3</b> · R1@0.7 <b>3/3</b></p><p>Contraste dentro/fuera <b>+0.708</b></p>", C[5])}
+  {_card("⚠ Sin abstención", "<p>2 de 3 frases ausentes con <b>0.998</b> de confianza</p><p>La curva <b>no</b> se aplana: no hay clase “sin momento”.</p>", C[2])}
+</div>
+<p class="note">Medido con <span class="mono">evaluacion_inferencia.py</span> · ventanas +1 a +2.5 s más anchas que el intervalo real</p>""", kicker="Resultados"))
 
     s.append(_slide(
         "Limitaciones",
@@ -573,8 +597,9 @@ pred[<span class="s">"pred_saliency_scores"</span>]   <span class="c"># un punta
   {_card("✂ Clips de 2 s", "<p>Lo muy rápido se pierde entre muestras.</p>", C[2])}
   {_card("📷 Fotos sueltas", "<p>Con solo CLIP no se capta bien el movimiento.</p>", C[3])}
   {_card("🌐 Solo inglés", "<p>Entrenado con consultas en inglés.</p>", C[4])}
-  {_card("🔇 Sin audio útil", "<p>Concatenarlo sin alinear empeora métricas.</p>", C[6])}
-  {_card("🎯 Una palabra", "<p>Puede fijarse en un objeto y perder la acción.</p>", C[5])}
+  {_card("🚫 Sin abstención", "<p>2 de 3 frases ausentes reciben <b>0.998</b> de confianza.</p>", C[6])}
+  {_card("📏 Ventanas anchas", "<p>IoU <b>0.846</b>, con <b>+1 a +2.5 s</b> de margen.</p>", C[5])}
+<p class="note">Carga del modelo 15–95 s · <span class="mono">predict</span> ≈0.1 s por consulta · sumar audio sin alinear empeora R1@0.7 (−1.29)</p>
 </div>""", kicker="Cierre"))
 
     s.append(_slide(

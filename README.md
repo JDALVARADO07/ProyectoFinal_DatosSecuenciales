@@ -195,15 +195,17 @@ A esta se suman otras dos contribuciones: la alineación local-global de video y
 ### 5.1 Estructura del Repositorio
 
 ```text
-proyectofinal/
+ProyectoFinal_DatosSecuenciales/
 ├── tr_detr_model.py      # Reimplementación didáctica de TR-DETR (referencia; la app no la usa)
 ├── inference.py          # Motor de inferencia sobre Lighthouse, hooks de atención y CLI
 ├── app.py                # Interfaz Streamlit con tres pestañas: Presentación, Inferencia y Mapas Q,K,V
 ├── slides.py             # Presentación interactiva de la arquitectura, renderizada como componente HTML
-├── download_weights.py   # Script para descargar clip_tr_detr_qvhighlight.ckpt desde Zenodo (13960580)
+├── download_weights.py   # Descarga y verifica (tamaño + MD5) el checkpoint oficial de Zenodo (13960580)
+├── flujo_inferencia.py   # Flujo oficial encode_video -> predict, con tiempos y formas de los tensores
+├── evaluacion_inferencia.py # Métricas propias: IoU, R1@0.5/0.7, contraste de highlights y control negativo
 ├── requirements.txt      # Dependencias del proyecto (streamlit >= 1.33, torch, numpy, etc.)
 ├── requirements-lighthouse.txt # Dependencias extra para inferencia oficial con CLIP + Lighthouse
-├── assets/               # Recursos gráficos (diagrama de fases de la arquitectura)
+├── assets/               # Diagrama de fases, captura de la app y figuras de resultados
 ├── sample_data/          # Videos de prueba: demo_real_30s.mp4 (real, 3 escenas) y demo_video_eventos.mp4 (bloques de color)
 └── weights/              # Carpeta destino para el checkpoint preentrenado (.ckpt)
 ```
@@ -249,6 +251,19 @@ streamlit run app.py
 ```
 La interfaz se organiza en tres pestañas: **Presentación** (diapositivas de la arquitectura), **Inferencia** (carga de video, consulta y resultados) y **Tensores Q, K, V** (mapas de atención del modelo).
 
+![App en ejecución](assets/app_presentacion.png)
+
+*Figura 1 — App en ejecución: el motor oficial queda cargado en la barra lateral y la pestaña Presentación muestra el deck (1/22).*
+
+#### Paso 5: Verificar los pesos y reproducir las métricas
+```powershell
+python download_weights.py --check    # comprueba tamaño y MD5 del checkpoint local
+python flujo_inferencia.py            # flujo encode_video -> predict con tiempos medidos
+python evaluacion_inferencia.py       # IoU, R1@0.5/0.7, contraste de highlights y control negativo
+```
+
+`download_weights.py` compara el archivo con el tamaño y el MD5 publicados por Zenodo, de modo que una descarga incompleta o corrupta se detecta antes de cargar el modelo. Los dos scripts siguientes imprimen sus tablas en consola; `evaluacion_inferencia.py --json ruta.json` permite volcar los resultados.
+
 #### Demostración recomendada
 Con Lighthouse activo, usar el video real compuesto de 30 segundos:
 
@@ -287,12 +302,45 @@ En el conjunto de prueba de **QVHighlights** (videos reales de noticias y vlogs 
 | **TR-DETR (Artículo Base)** | **AAAI 2024** | **Video (SF+CLIP)** | **64.66** | **48.96** | **63.98** | **43.73** | **42.62** | **63.42** |
 | **TR-DETR Multimodal** | **AAAI 2024** | **Video + Audio** | **65.05** | **47.67** | **64.87** | **42.98** | **43.10** | **63.88** |
 
+*Conjunto de prueba de QVHighlights; se omite la columna de mAP de highlight detection por claridad (TR-DETR: 39.91, TR-DETR multimodal: 39.90).*
+
 **Análisis cuantitativo:**
 1. **Salto en localización estricta ($\text{R1}@0.7$):** TR-DETR supera a Moment-DETR en **+15.94 puntos porcentuales** ($48.96\%$ vs. $33.02\%$) y a QD-DETR en **+3.98 puntos**, demostrando que inyectar los puntajes de highlight en la memoria del Encoder (`HD2MR`) permite a las *Moment Queries* ajustar con mucha mayor exactitud los bordes de inicio y fin del evento.
-2. **Impacto de la reciprocidad en Highlight Detection ($\text{HIT}@1$):** El módulo `MR2HD` basado en GRU eleva el $\text{HIT}@1$ a **$63.42\%$**, confirmando que conocer la región acotada del momento reduce falsos positivos en clips aislados fuera del intervalo.
+2. **Reciprocidad y detección de highlights ($\text{HIT}@1$):** el modelo completo alcanza **$63.42\%$** de $\text{HIT}@1$; la ablación (§6.2) matiza de dónde viene esa mejora: la reciprocidad entre tareas aporta sobre todo **cuando ya existe alineación multimodal**, y `MR2HD` aislado apenas mueve el $\text{HIT}@1$.
 
-### 6.2 Verificación Experimental en Inferencia Local
-Con Lighthouse activo, se ejecutó:
+### 6.2 Ablación de módulos (Table 4 del artículo)
+
+La Table 4 del artículo parte de un *baseline* (Moment-DETR con el decoder de DAB-DETR) y mide, sobre el **conjunto de validación** de QVHighlights, el efecto de añadir cada módulo:
+
+| Configuración | LGAM | VFR | MR2HD | HD2MR | R1@0.5 | R1@0.7 | mAP@0.5 | mAP@0.75 | Avg. mAP | HIT@1 |
+| :--- | :---: | :---: | :---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| (a) baseline | | | | | 57.72 | 42.35 | 59.10 | 38.16 | 38.03 | 57.44 |
+| (b) + LGAM | ✔ | | | | 63.10 | 44.97 | 63.13 | 40.22 | 40.47 | 63.87 |
+| (c) + VFR | | ✔ | | | 64.19 | 47.61 | 63.50 | 42.90 | 41.74 | 64.13 |
+| (d) + MR2HD | | | ✔ | | 58.39 | 42.71 | 59.28 | 39.19 | 38.76 | 58.80 |
+| (e) + HD2MR | | | | ✔ | 59.61 | 42.26 | 60.91 | 39.28 | 39.26 | 58.45 |
+| (f) + MR2HD + HD2MR | | | ✔ | ✔ | 59.81 | 44.71 | 60.25 | 39.33 | 39.80 | 57.94 |
+| (g) + LGAM + VFR | ✔ | ✔ | | | 62.13 | 47.16 | 62.00 | 42.79 | 41.21 | 62.65 |
+| (h) + LGAM + VFR + MR2HD | ✔ | ✔ | ✔ | | 63.23 | 46.90 | 63.30 | 42.47 | 41.64 | 59.55 |
+| (i) + LGAM + VFR + HD2MR | ✔ | ✔ | | ✔ | 66.32 | 50.71 | 65.71 | 44.82 | 43.95 | 64.90 |
+| (j) todos los módulos | ✔ | ✔ | ✔ | ✔ | **67.10** | **51.48** | **66.27** | **46.42** | **45.09** | 64.77 |
+
+*Mismas columnas que la Table 1; se omite la columna de mAP de highlight detection por claridad.*
+
+**Lectura de la ablación:**
+
+1. **La alineación multimodal es lo que más aporta por separado:** LGAM suma **+5.38** R1@0.5 (b) y VFR **+6.47** (c) sobre el baseline.
+2. **La reciprocidad sin alineación casi no aporta:** MR2HD +0.67 (d), HD2MR +1.89 (e) y ambos juntos +2.09 (f), con el HIT@1 estancado (57.44 → 57.94).
+3. **Con alineación previa el efecto se dispara:** partiendo de (g) 62.13, añadir HD2MR lleva a (i) **66.32** (+4.19 R1@0.5, +3.55 R1@0.7); añadir sólo MR2HD lleva a (h) 63.23 (+1.10) **pero hunde el HIT@1 de 62.65 a 59.55**.
+4. **El modelo completo (j)** es el mejor en localización (67.10 / 51.48), con el HIT@1 prácticamente empatado con (i) (64.77 vs 64.90).
+
+> **Conclusión:** la reciprocidad entre tareas no es un aditivo gratis; rinde cuando las dos modalidades ya comparten espacio semántico. Es la explicación que da el propio artículo para la caída de la configuración (h).
+
+### 6.3 Resultados propios y verificación experimental
+
+Los valores de esta sección los produce `python evaluacion_inferencia.py` sobre `sample_data/demo_real_30s.mp4` (15 clips de 2 s; tres escenas anotadas de 10 s) con el checkpoint oficial (`clip_tr_detr_qvhighlight.ckpt`, MD5 `941148ee…761b`). Son **medidas propias en un video de demostración**: no son cifras del benchmark y no deben compararse con la Table 1.
+
+Para inspeccionar las dimensiones internas y las ventanas que devuelve el modelo oficial se ejecutó además:
 
 ```powershell
 python inference.py --video sample_data/demo_real_30s.mp4 --query "A man opens the door of a car"
@@ -306,13 +354,62 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
   - Cross-attention del decoder: `(10, 15)` por capa (*10 Moment Queries* × clips).
 - **Localización obtenida con el modelo oficial:** Top-1 `[8.29 s – 19.91 s]` con **97.2 %** de confianza, correspondiente a la segunda escena (`[10–20 s]`). La curva de relevancia concentra su pico entre los clips 5 y 10.
 
-| Consulta | Top-1 predicho | Confianza | Escena real |
-|---|---|---|---|
-| `Car driving on the road` | 0.07–12.46 s | 97.3 % | 0–10 s |
-| `A man opens the door of a car` | 8.29–19.91 s | 97.2 % | 10–20 s |
-| `An old man walking in the park` | 21.05–30.0 s | 99.5 % | 20–30 s |
-
 > **Nota:** todo lo que muestra la app (intervalos, relevancia y mapas de atención) proviene del modelo oficial (Lighthouse + checkpoint de QVHighlights + CLIP ViT-B/32). Los mapas se leen con *forward hooks* sobre sus módulos de atención durante la predicción.
+
+#### 6.3.1 Localización: intervalo real vs. predicho
+
+| Intervalo real | Top-1 predicho | IoU | R1@0.5 | R1@0.7 | Confianza |
+| :---: | :---: | ---: | :---: | :---: | ---: |
+| [0, 10] s | [0.07, 12.46] s | 0.797 | ✔ | ✔ | 0.973 |
+| [10, 20] s | [8.29, 19.91] s | 0.846 | ✔ | ✔ | 0.972 |
+| [20, 30] s | [21.05, 30.00] s | 0.895 | ✔ | ✔ | 0.995 |
+
+![IoU del intervalo predicho frente al real](assets/eval_localizacion.png)
+
+*Figura 2 — IoU del intervalo Top-1 en cada escena; las líneas horizontales marcan los umbrales de R1@0.5 y R1@0.7.*
+
+**IoU medio 0.846 · R1@0.5 = 3/3 · R1@0.7 = 3/3.** El modelo acierta las tres escenas, pero sus ventanas son **más anchas** que el intervalo anotado (entre +1 y +2,5 s de margen en los bordes): es el comportamiento esperado de la cabeza L1 sin ajuste fino en el dominio.
+
+#### 6.3.2 Detección de highlights: relevancia dentro vs. fuera
+
+| Dentro del intervalo | Fuera del intervalo | Contraste |
+| ---: | ---: | ---: |
+| 0.982 | 0.298 | +0.684 |
+| 0.967 | 0.422 | +0.545 |
+| 0.991 | 0.096 | +0.895 |
+
+**Contraste medio +0.708:** la curva concentra la relevancia dentro del intervalo (≈0.98) y la mantiene baja fuera (≈0.27), es decir, además de localizar, el modelo **ordena** los clips correctamente.
+
+#### 6.3.3 Control negativo: consultas que no aparecen en el video
+
+| Tipo | Consulta | Confianza | p_max | Entropía (1.0 = plana) |
+| :--- | :--- | ---: | ---: | ---: |
+| presente | Car driving on the road | 0.973 | 0.160 | 0.797 |
+| presente | A man opens the door of a car | 0.972 | 0.150 | 0.853 |
+| presente | An old man walking in the park | 0.995 | 0.200 | 0.663 |
+| **ausente** | A penguin skating on a frozen lake | **0.998** | 0.250 | 0.661 |
+| **ausente** | A cat playing the piano in a jazz bar | **0.998** | 0.335 | 0.609 |
+| ausente | The stock market crashes on a trading floor | 0.446 | 0.106 | 0.949 |
+
+**Hallazgo: la hipótesis "una frase ausente aplana la curva" no se cumple.** Dos de las tres consultas que no aparecen en el video reciben **0.998** de confianza —más que las correctas— y una entropía *menor*, es decir curvas **más picudas**. Sólo una frase de un dominio completamente ajeno ("stock market") baja a 0.446 y se acerca a la curva plana (entropía 0.949).
+
+![Confianza del intervalo según el tipo de consulta](assets/eval_control_negativo.png)
+
+*Figura 3 — Confianza del Top-1 por consulta. Dos de las tres consultas ausentes (naranja) igualan o superan a las correctas.*
+
+La explicación es estructural: TR-DETR se entrenó con **una consulta por video** y no tiene una clase "sin momento"; el modelo **siempre** devuelve una ventana. La consulta decide *dónde*, no *si*. Por tanto la confianza del Top-1 sirve como **umbral grosero de abstención**, no como probabilidad calibrada de que la frase aparezca en el video.
+
+#### 6.3.4 Latencias
+
+| Etapa | Medición |
+| :--- | :--- |
+| Carga del modelo | 15–95 s según el caché de disco y la carga de la CPU |
+| `encode_video` | 3,4–5,0 s para 15 clips (229–279 ms por clip), **una sola vez** |
+| `predict` | 0,07–0,18 s por consulta según la carga de la CPU (media ≈0,1 s) |
+
+![Salida de consola de la evaluación](assets/eval_consola.png)
+
+*Figura 4 — Salida de `python evaluacion_inferencia.py`: configuración, localización, contraste de highlights, control negativo y latencias (todas las cifras de esta sección).*
 
 ---
 
@@ -320,10 +417,22 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
 
 1. **Aprendizajes clave sobre el mecanismo de Cross-Attention:** La implementación permitió comprobar que el éxito de una arquitectura Transformer Encoder–Decoder multimodal radica en la asignación asimétrica de $Q$, $K$ y $V$. Mientras que en la fusión temprana (**V2T**) los clips de video actúan como *Queries* ($Q_v$) para filtrar palabras relevantes del texto ($K_t, V_t$), en el **Decoder** son las *Moment Queries* aprendibles ($Q_{\text{dec}}$) las que interrogan a la secuencia temporal de clips codificados ($K_{\text{enc}}, V_{\text{enc}}$) para regresar directamente las coordenadas $(\hat{c}_i, \hat{w}_i)$ del intervalo sin necesidad de generación autorregresiva token por token.
 2. **Sinergia entre arquitecturas Transformer y celdas recurrentes (GRU):** TR-DETR demuestra que las redes recurrentes vistas en la Semana 3 del curso (como GRU/LSTM) siguen siendo altamente efectivas cuando se integran dentro de un Transformer moderno (en el módulo `MR2HD`) para condensar secuencias locales de características.
-3. **Limitaciones identificadas:**
-   - **Resolución temporal discreta ($\Delta t = 2.0\text{ s}$):** Acciones muy breves (menores a 1 segundo) quedan suavizadas dentro de un único clip.
-   - **Extractores visuales congelados:** El modelo depende de la calidad semántica de los vectores extraídos previamente por CLIP.
-4. **Posibles mejoras futuras:** Incorporar muestreo adaptativo de clips ($\Delta t = 0.5\text{ s}$ en zonas de alto movimiento), integrar pistas de audio mediante *Cross-Attention* trimodal (Video + Audio + Texto) y reemplazar el emparejamiento fijo de consultas por *Deformable Cross-Attention* multiescala.
+3. **Limitaciones identificadas** (cada una con la medición que la respalda):
+   - **No existe una clase "sin momento":** TR-DETR se entrenó con una consulta por video y siempre devuelve una ventana. Medido en §6.3.3: dos de tres consultas ausentes obtienen **0.998** de confianza, con curvas *más picudas* que las correctas. La confianza no es una probabilidad calibrada.
+   - **Ventanas más anchas que el evento:** IoU medio **0.846** con R1@0.7 de 3/3, pero con un margen de **+1 a +2,5 s** en los bordes; sin ajuste fino en el dominio el modelo prefiere cubrir de más.
+   - **Techo de 75 clips (150 s) por video:** `encode_video` lanza `ValueError` al superarlo porque el embedding posicional no soporta secuencias más largas.
+   - **Resolución temporal de 2 s:** acciones de menos de un segundo quedan diluidas dentro de un clip; el borde del intervalo no puede ser más preciso que $\Delta t$.
+   - **Dependencia de extractores congelados (CLIP):** con el video de bloques de color la curva queda **plana** (entropía normalizada 1.00, confianza 0.19): si CLIP no capta la semántica, el Transformer no puede recuperarla.
+   - **Coste de arranque:** 15–95 s de carga del modelo según el caché de disco y la CPU; la primera vez incluye descargar ~350 MB de pesos de CLIP.
+   - **Dependencia del entorno:** Lighthouse requiere instalarse sin dependencias (`--no-deps`), `torchaudio` emparejado con `torch` y, en Windows, el parche de FFmpeg/`ffprobe` que aplica `inference.py`.
+
+4. **Posibles mejoras futuras** (priorizadas según la limitación que atacan):
+   - **Calibrar un umbral de abstención** sobre QVHighlights val (confianza + entropía) para responder "no está en el video" — ataca la limitación 1, que es la más visible en la demo.
+   - **Ajuste fino del `fuser`** con ~200 ejemplos del dominio: recupera bordes más ajustados y sube el contraste en videos propios (limitaciones 2 y 5).
+   - **Muestreo adaptativo de clips** ($\Delta t = 1$ s en zonas de alto movimiento) para eventos breves (limitación 4).
+   - **Troceo con solape de un clip** y fusión por NMS temporal para videos de más de 150 s (limitación 3).
+   - **Precarga del modelo al iniciar la app** (la app ya usa `st.cache_resource`; falta hacerlo en el arranque) para que la primera consulta no espere la carga (limitación 6).
+   - **Variante con audio (V+A):** el artículo reporta **+0.39 R1@0.5** pero **−1.29 R1@0.7** al añadir PANN; el audio ayuda a *encontrar* el momento, no a *ajustar los bordes*, así que sólo conviene si el caso de uso prioriza el recall.
 
 ---
 
