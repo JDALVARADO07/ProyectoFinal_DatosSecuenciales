@@ -129,7 +129,7 @@ En **TR-DETR**, los tensores **Query ($Q$)**, **Key ($K$)** y **Value ($V$)** se
 ### 5.1 Estructura del Repositorio
 
 ```text
-proyectofinal/
+ProyectoFinal_DatosSecuenciales/
 ├── tr_detr_model.py      # Arquitectura PyTorch explícita de TR-DETR (Encoder-Decoder, Q, K, V, HD2MR, MR2HD)
 ├── inference.py          # Pipeline de preprocesamiento con FFmpeg, motor de inferencia y CLI
 ├── app.py                # Interfaz Streamlit con tres pestañas: Presentación, Inferencia y Mapas Q,K,V
@@ -139,7 +139,7 @@ proyectofinal/
 ├── evaluacion_inferencia.py # Métricas propias: IoU, R1@0.5/0.7, contraste de highlights y control negativo
 ├── requirements.txt      # Dependencias del proyecto (streamlit >= 1.33, torch, numpy, etc.)
 ├── requirements-lighthouse.txt # Dependencias extra para inferencia oficial con CLIP + Lighthouse
-├── assets/               # Recursos gráficos (diagrama de fases de la arquitectura)
+├── assets/               # Diagrama de fases y figuras de resultados (IoU, control negativo, consola)
 ├── sample_data/          # Videos de prueba: demo_real_30s.mp4 (real, 3 escenas) y demo_video_eventos.mp4 (bloques de color)
 └── weights/              # Carpeta destino para el checkpoint preentrenado (.ckpt)
 ```
@@ -295,6 +295,10 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
 | [10, 20] s | [8.29, 19.91] s | 0.846 | ✔ | ✔ | 0.972 |
 | [20, 30] s | [21.05, 30.00] s | 0.895 | ✔ | ✔ | 0.995 |
 
+![IoU del intervalo predicho frente al real](assets/eval_localizacion.png)
+
+*Figura 1 — IoU del intervalo Top-1 en cada escena; las líneas horizontales marcan los umbrales de R1@0.5 y R1@0.7.*
+
 **IoU medio 0.846 · R1@0.5 = 3/3 · R1@0.7 = 3/3.** El modelo acierta las tres escenas, pero sus ventanas son **más anchas** que el intervalo anotado (entre +1 y +2,5 s de margen en los bordes): es el comportamiento esperado de la cabeza L1 sin ajuste fino en el dominio.
 
 #### 6.3.2 Detección de highlights: relevancia dentro vs. fuera
@@ -320,15 +324,23 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
 
 **Hallazgo: la hipótesis "una frase ausente aplana la curva" no se cumple.** Dos de las tres consultas que no aparecen en el video reciben **0.998** de confianza —más que las correctas— y una entropía *menor*, es decir curvas **más picudas**. Sólo una frase de un dominio completamente ajeno ("stock market") baja a 0.446 y se acerca a la curva plana (entropía 0.949).
 
+![Confianza del intervalo según el tipo de consulta](assets/eval_control_negativo.png)
+
+*Figura 2 — Confianza del Top-1 por consulta. Dos de las tres consultas ausentes (naranja) igualan o superan a las correctas.*
+
 La explicación es estructural: TR-DETR se entrenó con **una consulta por video** y no tiene una clase "sin momento"; el modelo **siempre** devuelve una ventana. La consulta decide *dónde*, no *si*. Por tanto la confianza del Top-1 sirve como **umbral grosero de abstención**, no como probabilidad calibrada de que la frase aparezca en el video.
 
 #### 6.3.4 Latencias
 
 | Etapa | Medición |
 | :--- | :--- |
-| Carga del modelo | 15–40 s (hasta 84 s con el caché de CLIP frío) |
-| `encode_video` | 3,4–5,0 s para 15 clips (229 ms por clip), **una sola vez** |
-| `predict` | 69–78 ms por consulta (media 73 ms), sobre una codificación ya calculada |
+| Carga del modelo | 15–95 s según el caché de disco y la carga de la CPU |
+| `encode_video` | 3,4–5,0 s para 15 clips (229–279 ms por clip), **una sola vez** |
+| `predict` | 0,07–0,18 s por consulta según la carga de la CPU (media ≈0,1 s) |
+
+![Salida de consola de la evaluación](assets/eval_consola.png)
+
+*Figura 3 — Salida de `python evaluacion_inferencia.py`: configuración, localización, contraste de highlights, control negativo y latencias (todas las cifras de esta sección).*
 
 ---
 
@@ -342,7 +354,7 @@ La explicación es estructural: TR-DETR se entrenó con **una consulta por video
    - **Techo de 75 clips (150 s) por video:** `encode_video` lanza `ValueError` al superarlo porque el embedding posicional no soporta secuencias más largas.
    - **Resolución temporal de 2 s:** acciones de menos de un segundo quedan diluidas dentro de un clip; el borde del intervalo no puede ser más preciso que $\Delta t$.
    - **Dependencia de extractores congelados (CLIP):** con el video de bloques de color la curva queda **plana** (entropía normalizada 1.00, confianza 0.19): si CLIP no capta la semántica, el Transformer no puede recuperarla.
-   - **Coste de arranque:** 15–40 s de carga del modelo (hasta **84 s** con el caché de CLIP frío) más ~350 MB de pesos de CLIP la primera vez.
+   - **Coste de arranque:** 15–95 s de carga del modelo según el caché de disco y la CPU; la primera vez incluye descargar ~350 MB de pesos de CLIP.
    - **Dependencia del entorno:** Lighthouse requiere instalarse sin dependencias (`--no-deps`), `torchaudio` emparejado con `torch` y, en Windows, el parche de FFmpeg/`ffprobe` que aplica `inference.py`.
 
 4. **Posibles mejoras futuras** (priorizadas según la limitación que atacan):

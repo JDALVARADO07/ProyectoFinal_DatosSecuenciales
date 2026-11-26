@@ -181,19 +181,50 @@ pred  = model.predict("A woman walking in a market", video)
 """,
     },
     {
+        "title": "Ablación: qué aporta cada módulo",
+        "body": """
+Table 4 del artículo (QVHighlights **val**), añadiendo módulos al *baseline*:
+
+| Configuración | R1@0.5 | R1@0.7 | HIT@1 |
+|---------------|--------|--------|-------|
+| (a) baseline | 57.7 | 42.4 | 57.4 |
+| (b) + LGAM | 63.1 | 45.0 | 63.9 |
+| (c) + VFR | 64.2 | 47.6 | 64.1 |
+| (d) + MR2HD | 58.4 | 42.7 | 58.8 |
+| (e) + HD2MR | 59.6 | 42.3 | 58.5 |
+| (f) MR2HD + HD2MR | 59.8 | 44.7 | 57.9 |
+| (g) LGAM + VFR | 62.1 | 47.2 | 62.7 |
+| (h) + MR2HD | 63.2 | 46.9 | 59.6 |
+| (i) + HD2MR | 66.3 | 50.7 | 64.9 |
+| (j) todos | **67.1** | **51.5** | 64.8 |
+
+- La **alineación** (LGAM, VFR) es lo que más aporta por separado: **+5.4** y **+6.5** en R1@0.5.
+- La **reciprocidad sin alineación** casi no mueve la aguja (f: +2.1, HIT@1 estancado).
+- Con alineación previa, **HD2MR** suma **+4.2** (i); **MR2HD** suma +1.1 pero **baja el HIT@1** (h).
+""",
+    },
+    {
         "title": "Resultados propios",
         "body": """
-Video real de 30 s (`demo_real_30s.mp4`) con el modelo oficial **Lighthouse + CLIP ViT-B/32**:
+`evaluacion_inferencia.py` sobre `demo_real_30s.mp4` (15 clips de 2 s) con el modelo oficial:
 
-| Consulta | Top-1 predicho | Confianza | Escena real |
-|----------|----------------|-----------|-------------|
-| `Car driving on the road` | 0.07–12.46 s | 97.3 % | 0–10 s |
-| `A man opens the door of a car` | 8.29–19.91 s | 97.2 % | 10–20 s |
-| `An old man walking in the park` | 21.05–30.0 s | 99.5 % | 20–30 s |
+| Escena real | Top-1 predicho | IoU | R1@0.7 |
+|-------------|----------------|-----|--------|
+| [0, 10] s | [0.07, 12.46] s | 0.797 | ✓ |
+| [10, 20] s | [8.29, 19.91] s | 0.846 | ✓ |
+| [20, 30] s | [21.05, 30.00] s | 0.895 | ✓ |
 
-- ✓ El modelo localiza correctamente las tres escenas del video.
-- ✓ La curva de relevancia concentra su pico en el intervalo predicho.
-- ⚠ El modelo siempre devuelve un intervalo, incluso para consultas que no aparecen en el video; la confianza no debe interpretarse como probabilidad calibrada.
+**IoU medio 0.846 · R1@0.5 3/3 · R1@0.7 3/3** · contraste dentro/fuera **+0.708**
+
+| Consulta que NO aparece en el video | Confianza | Entropía |
+|-------------------------------------|-----------|----------|
+| A penguin skating on a frozen lake | **0.998** | 0.661 |
+| A cat playing the piano in a jazz bar | **0.998** | 0.609 |
+| The stock market crashes on a trading floor | 0.446 | 0.949 |
+
+- ⚠ **La curva no se aplana:** el modelo siempre devuelve una ventana; no existe una clase "sin momento".
+- Sólo una frase de dominio ajeno baja a 0.446 y se acerca a la curva plana (entropía 0.949).
+- `encode_video` 3,4 s (una sola vez) · `predict` ≈0,1 s por consulta.
 """,
     },
     {
