@@ -37,79 +37,144 @@ Implementar el pipeline de preprocesamiento e inferencia de la arquitectura **Tr
 
 ## 3. Marco Teórico
 
-### 3.1 Arquitectura General Transformer Encoder–Decoder en TR-DETR
+### 3.1 Planteamiento general
 
-El flujo secuencial completo de **TR-DETR** se estructura en cinco etapas interconectadas:
+TR-DETR (*Task-Reciprocal Detection Transformer*) es un modelo que recibe un video y una consulta en lenguaje natural, y resuelve de manera conjunta dos tareas. La primera, denominada *Moment Retrieval* (MR), consiste en localizar el intervalo de tiempo [inicio, fin] en el que ocurre lo descrito por la consulta. La segunda, *Highlight Detection* (HD), consiste en asignar a cada segmento de dos segundos del video un puntaje que indica qué tan relevante es frente a dicha consulta.
 
-```mermaid
-flowchart LR
-    subgraph Entradas["1. Entradas Secuenciales (CLIP)"]
-        V["Video: L_v clips de 2s<br/>F_v ∈ ℝ^(B × L_v × 512)"]
-        T["Consulta: L_t tokens<br/>F_t ∈ ℝ^(B × L_t × 512)"]
-    end
+El modelo pertenece a la familia DETR, cuya característica principal es el uso de una arquitectura Transformer encoder–decoder en la que un conjunto fijo de consultas aprendidas predice directamente los resultados, sin necesidad de generar y ordenar candidatos de forma manual. El nombre *Task-Reciprocal* hace referencia a su principal aporte: las dos tareas no se resuelven de forma aislada, sino que cada una utiliza el resultado de la otra para mejorar su propia predicción.
 
-    subgraph PreEncoder["2. Alineación y Fusión Multimodal"]
-        LGAM["Alineación Local-Global (LGAM)<br/>Proyección MLP a d_model = 256"]
-        V2T["Cross-Attention V2T<br/>Q = Video (L_v×256)<br/>K, V = Texto (L_t×256)"]
-    end
+Con el fin de facilitar la comprensión de cada etapa, a lo largo de esta sección se emplea un mismo ejemplo: la consulta *"A woman walking in a market"* aplicada sobre un video de 150 segundos, el cual se divide en 75 clips de 2 segundos.
 
-    subgraph Encoder["3. Transformer Encoder + HD2MR"]
-        ENC["3 Capas Transformer Encoder<br/>Self-Attention Temporal (Q=K=V)"]
-        HD2MR["Módulo Recíproco HD2MR<br/>Puntaje inicial S_init modula Memoria"]
-    end
+### 3.2 Mecanismo de atención
 
-    subgraph Decoder["4. Transformer Decoder + MR2HD"]
-        MQ["10 Moment Queries Aprendibles<br/>Q_dec ∈ ℝ^(B × 10 × 256)"]
-        DEC["3 Capas Transformer Decoder<br/>Cross-Attention: Q=Queries, K,V=Encoder"]
-        MR2HD["Módulo Recíproco MR2HD (GRU)<br/>Momentos refinan relevancia final"]
-    end
+El funcionamiento del modelo se fundamenta en la atención escalada por producto punto, definida como:
 
-    subgraph Salidas["5. Cabezas de Predicción"]
-        OUT_MR["Intervalos [t_inicio, t_fin]<br/>y Confianza p_i ∈ (B × 10 × 2)"]
-        OUT_HD["Relevancia por Clip S_final<br/>∈ ℝ^(B × L_v)"]
-    end
+$$\text{Attention}(Q,K,V) = \text{softmax}\left(\frac{QK^T}{\sqrt d}\right)V$$
 
-    V --> LGAM
-    T --> LGAM
-    LGAM --> V2T
-    V2T --> ENC
-    ENC --> HD2MR
-    HD2MR --> DEC
-    MQ --> DEC
-    DEC --> OUT_MR
-    DEC --> MR2HD
-    HD2MR --> MR2HD
-    MR2HD --> OUT_HD
+En esta expresión, la matriz Q (*Query*) representa aquello que busca información, la matriz K (*Key*) representa aquello contra lo cual se compara, y la matriz V (*Value*) contiene la información que finalmente se transmite. El producto $QK^T$ mide la similitud entre cada elemento de Q y cada elemento de K; la función softmax convierte esas similitudes en pesos que suman uno, y el factor $\sqrt d$ evita que los valores crezcan en exceso y saturen dicha función. Un aspecto que resultó clave para la comprensión del modelo es que la salida de la atención conserva una fila por cada elemento de Q, de modo que la elección de qué secuencia actúa como Q determina la forma del resultado.
+
+Las matrices Q, K y V se obtienen al multiplicar la entrada por matrices de pesos ($W_Q$, $W_K$, $W_V$) que se aprenden durante el entrenamiento y permanecen fijas en la inferencia. Por el contrario, la matriz de atención resultante del softmax se recalcula para cada video y cada consulta. Cuando Q, K y V provienen de la misma secuencia se habla de *self-attention*; cuando Q proviene de una secuencia y K y V de otra, se habla de *cross-attention*. TR-DETR emplea ocho cabezas de atención en paralelo, cada una de 32 dimensiones (256/8), lo que permite que cada cabeza se especialice en un tipo de relación distinta.
+
+### 3.3 Arquitectura por fases
+
+Para su estudio, la arquitectura se dividió en seis fases, señaladas en la siguiente figura.
+
+![Fases de TR-DETR](assets/fases_tr_detr.png)
+
+#### Fase 1: extracción de características con CLIP
+
+El video se divide en clips de 2 segundos sin solapamiento. De cada clip se toma un fotograma, que el codificador de imágenes de CLIP (ViT-B/32) transforma en un vector de 512 dimensiones. De forma análoga, el codificador de texto de CLIP convierte cada palabra de la consulta en un vector de la misma dimensión:
+
+$$F_v \in \mathbb{R}^{L\times 512},\qquad F_t \in \mathbb{R}^{N\times 512}$$
+
+donde $L$ es el número de clips y $N$ el número de palabras. CLIP permanece congelado, es decir, sus pesos no se modifican. Su uso se justifica porque fue preentrenado con pares imagen–texto mediante una pérdida contrastiva, lo que hace que imágenes y palabras con el mismo significado queden representadas en un espacio común; por ejemplo, la imagen de un mercado y la palabra *"market"* producen vectores cercanos. Es importante señalar que CLIP procesa cada fotograma de manera independiente y, por lo tanto, no modela la secuencia temporal; esa tarea recae en las etapas posteriores de TR-DETR.
+
+#### Fase 2: alineación multimodal local-global
+
+Las características de video y texto se proyectan a la dimensión interna del modelo, $d = 256$, mediante dos perceptrones multicapa:
+
+$$\hat F_v = \text{MLP}_v(F_v),\qquad \hat F_t = \text{MLP}_t(F_t)$$
+
+Sobre estas representaciones actúan dos reguladores. Cabe aclarar que ambos son funciones de pérdida que solo intervienen durante el entrenamiento: no producen ninguna salida que continúe hacia adelante, sino que, mediante la retropropagación, ajustan los pesos de los MLP para que video y texto queden mejor alineados.
+
+El regulador local compara cada clip con cada palabra mediante la similitud coseno, y promedia el resultado sobre las palabras para obtener un valor por clip:
+
+$$S_{loc} = \sigma\left(\frac{\hat F_v \hat F_t^T}{\|\hat F_v\|\|\hat F_t\|}\right),\qquad \mathcal{L}_{local} = -\sum_{i=1}^{L}\left[C_i\log\hat S^i_{loc} + (1-C_i)\log(1-\hat S^i_{loc})\right]$$
+
+En esta entropía cruzada binaria, $C_i$ toma el valor 1 si el clip $i$ pertenece al momento anotado manualmente en el dataset y 0 en caso contrario, mientras que $\hat S^i_{loc}$ es la similitud predicha. Debido al signo negativo y a que el logaritmo de un número entre 0 y 1 es negativo, la pérdida aumenta cuando el modelo asigna un valor bajo a un clip que sí era relevante, o un valor alto a uno que no lo era. De este modo, el modelo aprende a distinguir clips visualmente similares a la consulta pero que no corresponden al momento buscado.
+
+El regulador global resume el video y la consulta en un único vector cada uno, $G_v$ y $G_t$, obtenidos como el promedio de los clips y de las palabras respectivamente, y aplica una pérdida contrastiva sobre el lote de entrenamiento:
+
+$$\mathcal{L}_{global} = -\frac{1}{B}\sum_{i=1}^{B}\log\frac{\exp(G_v^i\cdot G_t^i)}{\sum_{j=1}^{B}\exp(G_v^i\cdot G_t^j)}$$
+
+La fracción corresponde a la probabilidad de que el modelo identifique la consulta correcta de un video entre las $B$ consultas del lote. Las demás consultas actúan como ejemplos negativos, de manera que la pérdida obliga a acercar cada video a su consulta y a alejarlo de las restantes. Se entendió que el regulador local opera a una escala fina (clip–palabra) y el global a una escala general (video–consulta), por lo que ambos resultan complementarios.
+
+#### Fase 3: refinamiento visual y fusión de modalidades
+
+En el refinamiento visual se calcula una matriz de similitud entre clips y palabras:
+
+$$A = \frac{\text{Linear}(\hat F_v)\,\text{Linear}(\hat F_t)^T}{\sqrt d} \in \mathbb{R}^{L\times N}$$
+
+A esta matriz se le aplican dos normalizaciones softmax. En $A_r$, normalizada por filas, cada clip distribuye su atención entre las palabras; en $A_c$, normalizada por columnas, cada palabra distribuye su atención entre los clips. El siguiente ejemplo ilustra ambas matrices para tres clips del video:
+
+```
+A_r (por fila)   woman  walking  market        A_c (por columna)  woman  walking  market
+clip calle        0.20    0.70    0.10          clip calle          0.10    0.60    0.05
+clip mercado      0.40    0.10    0.50          clip mercado        0.80    0.30    0.90
+clip cielo        0.33    0.33    0.33          clip cielo          0.10    0.10    0.05
 ```
 
----
+En $A_r$ se observa que el clip del cielo reparte su atención de forma uniforme, lo que indica que no guarda relación con ninguna palabra. En $A_c$ se observa que la palabra *"market"* concentra su atención en el clip del mercado. A partir de estas matrices se calculan:
 
-### 3.2 Mecanismo de Atención y Generación de los Tensores $Q$, $K$ y $V$
+$$F_{v2q} = A_r\hat F_t \qquad F_{q2v} = A_r A_c^T \hat F_v$$
 
-El núcleo computacional de TR-DETR es el mecanismo de **Atención de Producto Punto Escalado Multi-Cabeza (*Multi-Head Scaled Dot-Product Attention*)**, con dimensión oculta $d_{\text{model}} = 256$ y $h = 8$ cabezas paralelas, donde cada cabeza opera en un subespacio de dimensión $d_k = d_v = d_{\text{model}} / h = 32$:
+$F_{v2q}$ representa, para cada clip, la porción de la consulta que lo describe. $F_{q2v}$ representa, para cada clip, la apariencia que tienen en este video particular las palabras que le corresponden; es decir, ancla el concepto general de *"market"* a la forma en que el mercado aparece realmente en las imágenes. Ambas matrices tienen una fila por clip ($L\times 256$), lo que permite concatenarlas con las características originales:
 
-$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V, \qquad \text{MultiHead}(Q, K, V) = \text{Concat}(\text{head}_1, \dots, \text{head}_8) W^O$$
+$$F_v^{Cat} = [\hat F_v \,\|\, F_{v2q} \,\|\, \hat F_v\odot F_{v2q} \,\|\, \hat F_v\odot F_{q2v} \,\|\, F_t^G],\qquad F_v = \text{Linear}(F_v^{Cat})$$
 
-En **TR-DETR**, los tensores **Query ($Q$)**, **Key ($K$)** y **Value ($V$)** se construyen de tres maneras distintas según el bloque:
+Los productos elemento a elemento ($\odot$) toman valores altos cuando el clip y la información textual coinciden, y valores bajos cuando no lo hacen, por lo que los clips ajenos a la consulta quedan atenuados. El término $F_t^G$ corresponde a un resumen de la consulta replicado en cada clip.
 
-| Bloque de la Arquitectura | Tensor **Query ($Q$)** *(¿Qué busco?)* | Tensor **Key ($K$)** *(¿Qué etiqueta ofrezco?)* | Tensor **Value ($V$)** *(¿Qué contenido entrego?)* | Dimensión de la Matriz de Atención $\text{softmax}(QK^T/\sqrt{32})$ |
-| :--- | :--- | :--- | :--- | :---: |
-| **1. Cross-Attention Multimodal (V2T)** | Clips de video proyectados + Posición: $Q_v = (\tilde{F}_v + PE_v)W^Q \in \mathbb{R}^{B \times L_v \times 256}$ | Tokens de texto de la consulta: $K_t = \tilde{F}_t W^K \in \mathbb{R}^{B \times L_t \times 256}$ | Tokens de texto de la consulta: $V_t = \tilde{F}_t W^V \in \mathbb{R}^{B \times L_t \times 256}$ | $(B, 8, L_v, L_t)$ |
-| **2. Transformer Encoder (Self-Attention)** | Secuencia multimodal refinada: $Q_{\text{enc}} = (Z_{\text{mm}} + PE_v)W^Q \in \mathbb{R}^{B \times L_v \times 256}$ | Secuencia multimodal refinada: $K_{\text{enc}} = (Z_{\text{mm}} + PE_v)W^K \in \mathbb{R}^{B \times L_v \times 256}$ | Secuencia multimodal refinada: $V_{\text{enc}} = Z_{\text{mm}} W^V \in \mathbb{R}^{B \times L_v \times 256}$ | $(B, 8, L_v, L_v)$ |
-| **3. Transformer Decoder (Self-Attention)** | Propuestas de momentos + Ancla posicional: $Q_q = (H_{\text{dec}} + P_q)W^Q \in \mathbb{R}^{B \times 10 \times 256}$ | Propuestas de momentos + Ancla posicional: $K_q = (H_{\text{dec}} + P_q)W^K \in \mathbb{R}^{B \times 10 \times 256}$ | Propuestas de momentos: $V_q = H_{\text{dec}} W^V \in \mathbb{R}^{B \times 10 \times 256}$ | $(B, 8, 10, 10)$ |
-| **4. Transformer Decoder (Cross-Attention)** | **$N_q = 10$ Moment Queries aprendibles:** $Q_{\text{dec}} = (H_{\text{dec}} + P_q)W^Q \in \mathbb{R}^{B \times 10 \times 256}$ | **Memoria del Encoder modulada por HD2MR:** $K_{\text{mem}} = (M_{\text{HD2MR}} + PE_v)W^K \in \mathbb{R}^{B \times L_v \times 256}$ | **Memoria del Encoder modulada por HD2MR:** $V_{\text{mem}} = M_{\text{HD2MR}} W^V \in \mathbb{R}^{B \times L_v \times 256}$ | $(B, 8, 10, L_v)$ |
+Posteriormente, la fusión de modalidades se realiza mediante una *cross-attention*:
 
----
+$$Z = \text{softmax}\left(\frac{Q_vK_t^T}{\sqrt d}\right)V_t$$
 
-### 3.3 Innovaciones Principales del Modelo
+En esta etapa, Q proviene de los clips refinados, mientras que K y V provienen de las palabras de la consulta. La interpretación adoptada es que cada clip "pregunta" a la consulta qué relación tiene con ella y absorbe el significado de las palabras más relevantes. Se eligió a los clips como Q porque así la salida conserva un vector por clip y, con ello, el eje temporal del video; si la consulta actuara como Q, la salida tendría un vector por palabra y se perdería la información de en qué momento ocurre cada evento. El resultado, $Z\in\mathbb{R}^{L\times 256}$, son las características conjuntas: cada clip queda representado junto con la información de la consulta que le corresponde.
 
-1. **Alineación Multimodal Local-Global (LGAM):** Antes de aplicar atención cruzada, proyecta los embeddings de video y texto mediante redes MLP con normalización de capa y alinea la representación de cada clip local con el significado global de la oración, reduciendo la brecha entre modalidades (*modality gap*).
-2. **Refinamiento Visual Guiado por Consulta (V2T):** Usa una compuerta sigmoide sobre la salida del *Cross-Attention V2T* para atenuar los clips visuales cuyo contenido no guarda relación con la consulta textual.
-3. **Cooperación Recíproca Bidireccional (`HD2MR` y `MR2HD`):**
-   - **De Highlight Detection a Moment Retrieval (`HD2MR`):** Calcula una estimación preliminar de relevancia $S_{\text{init}} \in [0, 1]^{L_v}$ sobre la memoria del Encoder y pondera las características de cada clip:
-     $$M_{\text{HD2MR}} = H_{\text{enc}} + S_{\text{init}} \odot \text{Linear}(H_{\text{enc}})$$
-     Así, cuando las *Moment Queries* del Decoder consultan al Encoder, los clips relevantes destacan sobre el fondo.
-   - **De Moment Retrieval a Highlight Detection (`MR2HD`):** Las representaciones de los momentos localizados por el Decoder se procesan mediante una celda recurrente **GRU** ($\mathbf{F}_{Mv} = \text{GRU}(H_{\text{dec}})$) y se proyectan de regreso hacia los clips mediante la matriz de atención cruzada para producir la curva final de relevancia $S_{\text{final}} \in [0, 1]^{L_v}$.
+#### Fase 4: codificador y puntaje inicial de relevancia
+
+El codificador aplica *self-attention* entre los clips, de modo que Q, K y V provienen de la misma secuencia y la matriz de atención tiene dimensión $L\times L$. A cada clip se le suma una codificación posicional que indica su ubicación en el tiempo. Gracias a esta etapa, cada clip incorpora información de sus vecinos, lo que aporta contexto temporal y favorece que los momentos detectados resulten continuos. El codificador consta de dos capas, cada una formada por una *self-attention* seguida de una red *feed-forward* (256 → 1024 → 256).
+
+Sobre la salida del codificador, una capa lineal convierte el vector de cada clip en un único valor, que constituye un puntaje preliminar de relevancia:
+
+$$H = \text{Linear}(\text{MHA}(Z)) \in \mathbb{R}^{L}$$
+
+#### Fase 5: HD2MR y decodificador
+
+En el componente HD2MR, los puntajes preliminares se utilizan para atenuar los clips poco relevantes antes de buscar el intervalo. Para ello se multiplican por las características conjuntas y el resultado se procesa nuevamente con el mismo codificador, es decir, con los mismos pesos:
+
+$$\bar Z = \text{softmax}(H)\odot Z,\qquad \hat Z = \text{MHA}(Z + \bar Z)$$
+
+La suma con $Z$ actúa como una conexión residual: evita que la información original se pierda, de manera que los clips relevantes se refuerzan sin que los demás desaparezcan por completo. Esto también protege al modelo frente a posibles errores en los puntajes preliminares.
+
+El decodificador recibe diez *moment queries*, que pueden entenderse como diez "buscadores" aprendidos. Cada una parte de un ancla temporal fija, definida por un centro y un ancho normalizados entre 0 y 1, y realiza una *cross-attention* en la que Q corresponde a las *moment queries*, mientras que K y V corresponden a la memoria $\hat Z$ del codificador. Las *moment queries* no reciben la consulta de forma directa; esta ya se encuentra incorporada en la memoria desde la fase 3. Así, el ancla indica dónde comenzar a buscar y la memoria indica qué clips son relevantes. En cada una de las dos capas del decodificador, la query ajusta su centro y su ancho para acercarse al momento real.
+
+La salida del decodificador (10 × 256) se procesa con dos cabezas. La cabeza de localización, un MLP de tres capas, predice el centro y el ancho del intervalo, lo que constituye una tarea de regresión. La cabeza de clase, una capa lineal, determina si la propuesta corresponde a un momento real o a fondo, lo que constituye una tarea de clasificación cuya probabilidad se utiliza como confianza. Por ejemplo, un centro de 0.31 y un ancho de 0.17 en un video de 150 segundos corresponden al intervalo [34 s, 60 s]. Durante el entrenamiento, el algoritmo de emparejamiento húngaro asigna cada momento real a la query que mejor lo aproxima, mientras que las restantes aprenden a clasificarse como fondo.
+
+#### Fase 6: MR2HD y puntaje final de relevancia
+
+En el componente MR2HD, el intervalo de mayor confianza se utiliza para refinar los puntajes de relevancia. Los clips contenidos en dicho intervalo se procesan, en orden temporal, mediante una red recurrente GRU, que los resume en un único vector $F^M_v$. Este vector puede interpretarse como una representación visual del momento encontrado, y se compara con cada clip del video:
+
+$$F^M_v = \text{GRU}(m),\qquad S_{ref} = \frac{F^M_v\hat F_v^T}{\|F^M_v\|\|\hat F_v\|},\qquad H = \text{Linear}(Z + \text{softmax}(S_{ref})\odot\hat Z)$$
+
+El vector $S_{ref}$ mide qué tanto se parece cada clip al momento encontrado y se utiliza para reforzar las características de los clips similares, a partir de las cuales se recalcula el puntaje. Se comprendió que este mecanismo resulta útil en casos donde un clip no se asemeja claramente a la consulta, pero sí al momento detectado; por ejemplo, un clip en el que la persona aparece de espaldas dentro del mismo mercado. El puntaje $H$ obtenido en esta fase constituye la salida final de la tarea de HD, mientras que el puntaje preliminar de la fase 4 solo se emplea para apoyar la búsqueda del intervalo.
+
+### 3.4 Función de pérdida
+
+Durante el entrenamiento, el modelo optimiza de manera conjunta una única función de pérdida:
+
+$$\mathcal{L}_{total} = \mathcal{L}_{mom} + \mathcal{L}_{high} + \lambda_g(\mathcal{L}_{local} + \mathcal{L}_{global}),\qquad \lambda_g = 0.3$$
+
+Todos los parámetros se actualizan simultáneamente, con excepción de CLIP, que permanece congelado. Las pérdidas $\mathcal{L}_{local}$ y $\mathcal{L}_{global}$ se describieron en la fase 2; las dos restantes se heredan del modelo QD-DETR.
+
+La pérdida de recuperación de momentos, $\mathcal{L}_{mom}$, compara los intervalos predichos con los intervalos anotados manualmente. Como el modelo produce diez propuestas y cada video tiene uno o pocos momentos reales, primero se aplica el emparejamiento húngaro, que asigna cada momento real a la propuesta que mejor lo aproxima. Sobre cada pareja se calcula:
+
+$$\mathcal{L}_{mom} = \lambda_{L1}\,\|m - \hat m\|_1 + \lambda_{gIoU}\,\mathcal{L}_{gIoU}(m,\hat m) + \lambda_{cls}\,\mathcal{L}_{CE}$$
+
+El término L1 mide la diferencia absoluta entre el centro y el ancho reales ($m$) y los predichos ($\hat m$). El término gIoU penaliza el bajo traslape entre ambos intervalos, incluso cuando no se superponen. Finalmente, la entropía cruzada $\mathcal{L}_{CE}$ evalúa la clasificación: la propuesta emparejada debe clasificarse como momento, y las restantes, como fondo.
+
+La pérdida de detección de relevancia, $\mathcal{L}_{high}$, compara los puntajes predichos por clip con las calificaciones de 0 a 4 asignadas por anotadores humanos. En lugar de exigir valores exactos, evalúa el orden relativo de los clips mediante dos componentes:
+
+$$\mathcal{L}_{marg} = \max\left(0,\; \Delta + S(x_{neg}) - S(x_{pos})\right),\qquad \mathcal{L}_{rank} = -\sum_{r}\log\frac{\sum_{i\in P_r} e^{S_i}}{\sum_{j} e^{S_j}}$$
+
+En la pérdida de margen, un clip relevante ($x_{pos}$) debe obtener un puntaje superior al de uno poco relevante ($x_{neg}$) en al menos un margen $\Delta$. La pérdida contrastiva por rangos, evaluada para distintos umbrales de calificación $r$, favorece que el conjunto de clips que supera cada umbral ($P_r$) se ubique en las primeras posiciones. Como consecuencia, el modelo aprende a ordenar los clips y no a producir valores absolutos, lo que explica que los puntajes entregados en la inferencia puedan ser negativos y deban normalizarse para su visualización.
+
+En el presente trabajo no se realizó entrenamiento; se emplearon los pesos preentrenados sobre el dataset QVHighlights, por lo que estas pérdidas se describen con el fin de explicar cómo aprendió el modelo.
+
+### 3.5 Innovaciones del modelo
+
+La principal innovación de TR-DETR es la reciprocidad entre tareas. En los métodos anteriores de la misma familia, como Moment-DETR y QD-DETR, MR y HD compartían la extracción de características, pero se resolvían con cabezas independientes que no intercambiaban información. En TR-DETR, la detección de relevancia ayuda a la localización del momento (HD2MR), al atenuar los clips poco relevantes antes de la decodificación, y la localización del momento ayuda a la detección de relevancia (MR2HD), al proporcionar una referencia visual del momento encontrado.
+
+A esta se suman otras dos contribuciones: la alineación local-global de video y texto antes de su interacción, y el refinamiento visual guiado por la consulta. Según el estudio de ablación presentado por los autores, cada componente mejora el desempeño de manera individual, y la alineación resulta determinante: sin ella, la reciprocidad entre tareas puede incluso deteriorar los resultados, debido a que las tareas se transmiten errores cuando video y texto no se encuentran bien alineados.
 
 ---
 
