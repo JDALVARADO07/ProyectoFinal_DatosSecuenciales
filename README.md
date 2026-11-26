@@ -205,7 +205,7 @@ ProyectoFinal_DatosSecuenciales/
 ├── evaluacion_inferencia.py # Métricas propias: IoU, R1@0.5/0.7, contraste de highlights y control negativo
 ├── requirements.txt      # Dependencias del proyecto (streamlit >= 1.33, torch, numpy, etc.)
 ├── requirements-lighthouse.txt # Dependencias extra para inferencia oficial con CLIP + Lighthouse
-├── assets/               # Diagrama de fases y figuras de resultados (IoU, control negativo, consola)
+├── assets/               # Diagrama de fases, captura de la app y figuras de resultados
 ├── sample_data/          # Videos de prueba: demo_real_30s.mp4 (real, 3 escenas) y demo_video_eventos.mp4 (bloques de color)
 └── weights/              # Carpeta destino para el checkpoint preentrenado (.ckpt)
 ```
@@ -250,6 +250,10 @@ python inference.py --video sample_data/demo_real_30s.mp4 --query "A man opens t
 streamlit run app.py
 ```
 La interfaz se organiza en tres pestañas: **Presentación** (diapositivas de la arquitectura), **Inferencia** (carga de video, consulta y resultados) y **Tensores Q, K, V** (mapas de atención del modelo).
+
+![App en ejecución](assets/app_presentacion.png)
+
+*Figura 1 — App en ejecución: el motor oficial queda cargado en la barra lateral y la pestaña Presentación muestra el deck (1/22).*
 
 #### Paso 5: Verificar los pesos y reproducir las métricas
 ```powershell
@@ -362,7 +366,7 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
 
 ![IoU del intervalo predicho frente al real](assets/eval_localizacion.png)
 
-*Figura 1 — IoU del intervalo Top-1 en cada escena; las líneas horizontales marcan los umbrales de R1@0.5 y R1@0.7.*
+*Figura 2 — IoU del intervalo Top-1 en cada escena; las líneas horizontales marcan los umbrales de R1@0.5 y R1@0.7.*
 
 **IoU medio 0.846 · R1@0.5 = 3/3 · R1@0.7 = 3/3.** El modelo acierta las tres escenas, pero sus ventanas son **más anchas** que el intervalo anotado (entre +1 y +2,5 s de margen en los bordes): es el comportamiento esperado de la cabeza L1 sin ajuste fino en el dominio.
 
@@ -391,7 +395,7 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
 
 ![Confianza del intervalo según el tipo de consulta](assets/eval_control_negativo.png)
 
-*Figura 2 — Confianza del Top-1 por consulta. Dos de las tres consultas ausentes (naranja) igualan o superan a las correctas.*
+*Figura 3 — Confianza del Top-1 por consulta. Dos de las tres consultas ausentes (naranja) igualan o superan a las correctas.*
 
 La explicación es estructural: TR-DETR se entrenó con **una consulta por video** y no tiene una clase "sin momento"; el modelo **siempre** devuelve una ventana. La consulta decide *dónde*, no *si*. Por tanto la confianza del Top-1 sirve como **umbral grosero de abstención**, no como probabilidad calibrada de que la frase aparezca en el video.
 
@@ -405,7 +409,7 @@ La explicación es estructural: TR-DETR se entrenó con **una consulta por video
 
 ![Salida de consola de la evaluación](assets/eval_consola.png)
 
-*Figura 3 — Salida de `python evaluacion_inferencia.py`: configuración, localización, contraste de highlights, control negativo y latencias (todas las cifras de esta sección).*
+*Figura 4 — Salida de `python evaluacion_inferencia.py`: configuración, localización, contraste de highlights, control negativo y latencias (todas las cifras de esta sección).*
 
 ---
 
