@@ -7,6 +7,7 @@ Ejecución local:
     streamlit run app.py
 """
 
+import html
 import os
 import tempfile
 from pathlib import Path
@@ -28,7 +29,6 @@ st.set_page_config(
 
 def render_saliency_svg(
     timestamps: List[float],
-    saliency_init: List[float],
     saliency_final: List[float],
     top_moment: Dict[str, Any],
     duration: float,
@@ -48,7 +48,6 @@ def render_saliency_svg(
     m_end_x = x_coord(top_moment["end_sec"])
     span_w = max(4.0, m_end_x - m_start_x)
 
-    pts_init = " ".join(f"{x_coord(t):.1f},{y_coord(s):.1f}" for t, s in zip(timestamps, saliency_init))
     pts_final = " ".join(f"{x_coord(t):.1f},{y_coord(s):.1f}" for t, s in zip(timestamps, saliency_final))
 
     area_pts = (
@@ -91,7 +90,6 @@ def render_saliency_svg(
             Top-1 Momento [{top_moment['start_sec']}s - {top_moment['end_sec']}s]
         </text>
         <polygon points="{area_pts}" fill="#93c5fd" fill-opacity="0.28"/>
-        <polyline fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5,4" points="{pts_init}"/>
         <polyline fill="none" stroke="#1d4ed8" stroke-width="3" points="{pts_final}"/>
         {circles}
         <line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + plot_h}" stroke="#334155" stroke-width="1.5"/>
@@ -117,12 +115,12 @@ def render_heatmap_html(
     denom = max(1e-6, m_max - m_min)
 
     header_cells = "".join(
-        f'<th style="padding:4px 6px;font-size:11px;background:#f1f5f9;color:#1e293b;border:1px solid #cbd5e1;">{c}</th>'
+        f'<th style="padding:4px 6px;font-size:11px;background:#f1f5f9;color:#1e293b;border:1px solid #cbd5e1;">{html.escape(c)}</th>'
         for c in col_labels
     )
     rows_html = ""
     for r_idx, r_label in enumerate(row_labels):
-        cells = f'<td style="padding:4px 8px;font-size:11px;font-weight:600;background:#f8fafc;color:#0f172a;border:1px solid #cbd5e1;white-space:nowrap;">{r_label}</td>'
+        cells = f'<td style="padding:4px 8px;font-size:11px;font-weight:600;background:#f8fafc;color:#0f172a;border:1px solid #cbd5e1;white-space:nowrap;">{html.escape(r_label)}</td>'
         for c_idx in range(len(col_labels)):
             val = float(matrix[r_idx, c_idx])
             norm_v = (val - m_min) / denom
@@ -157,10 +155,18 @@ def render_heatmap_html(
 
 
 @st.cache_resource
-def load_engine(ckpt_path: str, clip_duration: float) -> TRDETRInferenceEngine:
-    return TRDETRInferenceEngine(
-        ckpt_path=ckpt_path if ckpt_path and os.path.exists(ckpt_path) else None,
-        clip_duration=clip_duration,
+def load_engine(ckpt_path: str) -> TRDETRInferenceEngine:
+    return TRDETRInferenceEngine(ckpt_path=ckpt_path or None)
+
+
+def layer_selector(label: str, num_layers: int, key: str) -> int:
+    """Selector de capa; por defecto la última del bloque."""
+    return st.selectbox(
+        label,
+        options=list(range(num_layers)),
+        index=num_layers - 1,
+        format_func=lambda i: f"Capa {i + 1} de {num_layers}" + (" (última)" if i == num_layers - 1 else ""),
+        key=key,
     )
 
 
@@ -171,7 +177,6 @@ def main():
     base_dir = Path(__file__).resolve().parent
     default_ckpt = base_dir / "weights" / "clip_tr_detr_qvhighlight.ckpt"
 
-    clip_duration = 2.0
     top_k = 5
 
     with st.sidebar:
@@ -181,8 +186,13 @@ def main():
             value=str(default_ckpt) if default_ckpt.exists() else "",
         )
 
-        engine = load_engine(ckpt_input, clip_duration)
-        st.info(engine.engine_status)
+        try:
+            engine = load_engine(ckpt_input)
+        except Exception as exc:
+            engine = None
+            st.error(f"No se pudo cargar el modelo oficial TR-DETR (Lighthouse): {type(exc).__name__}: {exc}")
+        else:
+            st.info(engine.engine_status)
 
         st.markdown("---")
         st.subheader("Video de entrada")
@@ -207,7 +217,10 @@ def main():
         render_slides()
 
     with tab_inf:
-        if active_video_path is None or not os.path.exists(active_video_path):
+        result = None
+        if engine is None:
+            st.error("La inferencia no está disponible: el modelo oficial no se pudo cargar (ver barra lateral).")
+        elif active_video_path is None or not os.path.exists(active_video_path):
             st.info("Suba un video en la barra lateral para iniciar la inferencia.")
         else:
             col_q, col_preset = st.columns([3, 2])
@@ -226,10 +239,15 @@ def main():
                     "Consulta en lenguaje natural (español o inglés):",
                     value=preset_query,
                 )
-            result = engine.predict(video_path=active_video_path, query=query_text)
-            st.session_state["_last_result"] = result
+            try:
+                result = engine.predict(video_path=active_video_path, query=query_text)
+            except Exception as exc:
+                st.session_state.pop("_last_result", None)
+                st.error(f"Falló la inferencia con el modelo oficial: {type(exc).__name__}: {exc}")
+            else:
+                st.session_state["_last_result"] = result
 
-            top_moment = result["ranked_moments"][0]
+        if result is not None:
             c_vid, c_res = st.columns([1.15, 1.35])
 
             with c_vid:
@@ -256,15 +274,14 @@ def main():
                 st.subheader("Relevancia por clip")
                 svg_chart = render_saliency_svg(
                     timestamps=result["clip_timestamps"],
-                    saliency_init=result["saliency_init"],
                     saliency_final=result["saliency_final"],
                     top_moment=chosen_moment,
                     duration=result["video_duration_sec"],
                 )
                 st.markdown(svg_chart, unsafe_allow_html=True)
                 st.caption(
-                    "Curva sólida: relevancia final por clip. Curva punteada: referencia inicial "
-                    "de la reimplementación didáctica."
+                    "Relevancia por clip (pred_saliency_scores del modelo oficial), "
+                    "reescalada a [0, 1] para visualizar."
                 )
 
                 st.subheader(f"Top-{top_k} propuestas del Decoder")
@@ -288,36 +305,65 @@ def main():
             st.info("Suba un video y ejecute la inferencia para ver los mapas de atención.")
         else:
             st.caption(
-                "Los mapas Q/K/V se calculan con la reimplementación didáctica de la arquitectura "
-                "(tr_detr_model.py). Las predicciones de intervalo y relevancia usan el modelo "
-                "oficial cuando Lighthouse está activo."
+                "Matrices de atención reales del modelo oficial TR-DETR (Lighthouse), capturadas con "
+                "forward hooks durante la predicción. Cada mapa es el promedio de las 8 cabezas."
             )
+            attn = qkv_result["attention"]
+            clip_len = qkv_result["clip_duration_sec"]
             clip_labels = [
-                f"C{i+1} ({int(i*clip_duration)}-{int((i+1)*clip_duration)}s)"
-                for i in range(qkv_result["num_clips"])
+                f"C{i+1} ({i*clip_len:g}-{(i+1)*clip_len:g}s)" for i in range(qkv_result["num_clips"])
             ]
-            col_h1, col_h2 = st.columns(2)
+            short_clip_labels = [f"C{i+1}" for i in range(qkv_result["num_clips"])]
+            rank_of_query = {m["query_id"]: r for r, m in enumerate(qkv_result["ranked_moments"], start=1)}
+            query_labels = [
+                f"Query #{q:02d}" + (f" (top-{rank_of_query[q]})" if q in rank_of_query else "")
+                for q in range(1, qkv_result["num_queries"] + 1)
+            ]
 
+            col_h1, col_h2 = st.columns(2)
             with col_h1:
-                v2t_html = render_heatmap_html(
-                    matrix=qkv_result["v2t_attention_matrix"],
+                li = layer_selector("Capa de fusión (t2v_encoder)", len(attn["fusion"]), "layer_fusion")
+                fusion_html = render_heatmap_html(
+                    matrix=attn["fusion"][li],
                     row_labels=clip_labels,
                     col_labels=qkv_result["tokens"],
-                    title="Cross-Attention V2T — softmax(Q_v @ K_tᵀ / √32)",
-                    subtitle="Filas: clips de video (Q) | Columnas: tokens de la consulta (K)",
+                    title="Fusión clip ← palabra — softmax(Q_clips @ K_palabrasᵀ / √32)",
+                    subtitle="Filas: clips de video (Q) | Columnas: tokens CLIP de la consulta (K/V)",
                 )
-                st.markdown(v2t_html, unsafe_allow_html=True)
+                st.markdown(fusion_html, unsafe_allow_html=True)
 
             with col_h2:
-                query_labels = [f"Query #{i+1:02d}" for i in range(len(qkv_result["raw_query_proposals"]))]
+                li = layer_selector("Capa del decoder", len(attn["decoder_cross"]), "layer_decoder")
                 dec_html = render_heatmap_html(
-                    matrix=qkv_result["decoder_cross_attention_matrix"],
+                    matrix=attn["decoder_cross"][li],
                     row_labels=query_labels,
-                    col_labels=clip_labels,
-                    title="Decoder Cross-Attention — softmax(Q_dec @ K_encᵀ / √32)",
-                    subtitle="Filas: 10 Moment Queries (Q) | Columnas: memoria del Encoder (K)",
+                    col_labels=short_clip_labels,
+                    title="Decoder Cross-Attention — softmax(Q_dec @ K_encᵀ / √64)",
+                    subtitle="Filas: Moment Queries (Q) | Columnas: memoria de clips del Encoder (K/V)",
                 )
                 st.markdown(dec_html, unsafe_allow_html=True)
+
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                li = layer_selector("Capa del encoder", len(attn["encoder"]), "layer_encoder")
+            with col_e2:
+                enc_pass = st.radio(
+                    "Pasada del encoder",
+                    options=["encoder", "encoder_first_pass"],
+                    format_func=lambda k: {
+                        "encoder": "HD2MR (memoria que usa el decoder)",
+                        "encoder_first_pass": "Primera pasada (tras la fusión)",
+                    }[k],
+                    horizontal=True,
+                )
+            enc_html = render_heatmap_html(
+                matrix=attn[enc_pass][li],
+                row_labels=clip_labels,
+                col_labels=short_clip_labels,
+                title="Encoder Self-Attention — softmax(Q_clips @ K_clipsᵀ / √32)",
+                subtitle="Filas: clips (Q) | Columnas: clips (K/V)",
+            )
+            st.markdown(enc_html, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

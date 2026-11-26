@@ -185,7 +185,8 @@ A esta se suman otras dos contribuciones: la alineación local-global de video y
    - **Secuencia Visual ($F_v$):** Cada clip de 2 segundos se codifica en un vector de dimensión $D_v = 512$ (espacio visual CLIP ViT-B/32), conformando el tensor $(1, L_v, 512)$.
    - **Secuencia Textual ($F_t$):** La consulta en lenguaje natural se tokeniza agregando los marcadores especiales de inicio y fin de secuencia (`<sos>`, $w_1, \dots, w_m$, `<eos>`) y se codifica en el tensor $(1, L_t, 512)$.
 3. **Inferencia con Pesos Preentrenados y Trazabilidad en PyTorch:**
-   - El motor `TRDETRInferenceEngine` (`inference.py`) soporta el archivo de pesos preentrenados `clip_tr_detr_qvhighlight.ckpt` alojado en Zenodo (`record/13960580`) y ejecuta el paso hacia adelante sobre la arquitectura explícita en PyTorch (`tr_detr_model.py`) para extraer tanto las predicciones como las matrices de atención $Q, K, V$.
+   - El motor `TRDETRInferenceEngine` (`inference.py`) carga el checkpoint oficial `clip_tr_detr_qvhighlight.ckpt` (Zenodo, `record/13960580`) con `lighthouse.models.TRDETRPredictor`. Los intervalos, la curva de relevancia y el número de clips salen directamente del modelo oficial.
+   - Los mapas de atención se extraen del mismo modelo con *forward hooks* de PyTorch registrados durante `predictor.predict()` (y retirados al terminar), sin modificar el código de Lighthouse: fusión clip←palabra (`transformer.t2v_encoder.layers[i].self_attn`, $L \times N$), self-attention del encoder (`transformer.encoder.layers[i].self_attn`, $L \times L$) y cross-attention del decoder (`transformer.decoder.layers[i].cross_attn`, $10 \times L$). Cada mapa es el promedio de las 8 cabezas.
 
 ---
 
@@ -195,8 +196,8 @@ A esta se suman otras dos contribuciones: la alineación local-global de video y
 
 ```text
 proyectofinal/
-├── tr_detr_model.py      # Arquitectura PyTorch explícita de TR-DETR (Encoder-Decoder, Q, K, V, HD2MR, MR2HD)
-├── inference.py          # Pipeline de preprocesamiento con FFmpeg, motor de inferencia y CLI
+├── tr_detr_model.py      # Reimplementación didáctica de TR-DETR (referencia; la app no la usa)
+├── inference.py          # Motor de inferencia sobre Lighthouse, hooks de atención y CLI
 ├── app.py                # Interfaz Streamlit con tres pestañas: Presentación, Inferencia y Mapas Q,K,V
 ├── slides.py             # Presentación interactiva de la arquitectura, renderizada como componente HTML
 ├── download_weights.py   # Script para descargar clip_tr_detr_qvhighlight.ckpt desde Zenodo (13960580)
@@ -216,14 +217,14 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-#### Paso 2 (Opcional): Descargar el archivo de pesos preentrenados desde Zenodo
+#### Paso 2: Descargar el archivo de pesos preentrenados desde Zenodo
 ```powershell
 python download_weights.py
 ```
-*(El sistema funciona tanto con el checkpoint descargado en `weights/clip_tr_detr_qvhighlight.ckpt` como en modo autónomo con la arquitectura PyTorch calibrada).*
+*(La app necesita el checkpoint en `weights/clip_tr_detr_qvhighlight.ckpt`).*
 
 #### Paso 2b: Habilitar la inferencia oficial con Lighthouse
-Para que la app use realmente los pesos oficiales y las características CLIP (y no solo la reimplementación didáctica):
+La app ejecuta exclusivamente el modelo oficial, así que Lighthouse es obligatorio:
 
 ```powershell
 pip install -r requirements-lighthouse.txt
@@ -233,13 +234,13 @@ pip install --no-deps git+https://github.com/line/lighthouse.git
 La primera vez que se ejecuta, Lighthouse descarga el modelo CLIP ViT-B/32 (~350 MB). La app muestra en la barra lateral:
 
 - **“Modelo TR-DETR oficial — pesos QVHighlights + CLIP ViT-B/32 (Lighthouse)”** cuando la inferencia oficial está activa.
-- Un mensaje de **“Lighthouse no disponible”** cuando no lo está; en ese caso se usa la reimplementación didáctica como respaldo.
+- Un mensaje de error con la excepción real cuando Lighthouse o el checkpoint no están disponibles; en ese caso no se muestran resultados.
 
 En Windows, `inference.py` adapta automáticamente Lighthouse: crea un shim de FFmpeg a partir de `imageio-ffmpeg` y evita el uso de `ffprobe` en el cargador de frames.
 
 #### Paso 3: Ejecutar la inferencia por consola (CLI)
 ```powershell
-python inference.py --query "El hombre abre la puerta del carro"
+python inference.py --video sample_data/demo_real_30s.mp4 --query "A man opens the door of a car"
 ```
 
 #### Paso 4: Iniciar la Interfaz Gráfica Interactiva en Streamlit
@@ -299,11 +300,10 @@ python inference.py --video sample_data/demo_real_30s.mp4 --query "A man opens t
 
 El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro conduciendo, `[10–20 s]` hombre abriendo la puerta de un carro y `[20–30 s]` anciano caminando en un parque.
 
-- **Trazabilidad dimensional verificada** (15 clips de 2 s, 10 tokens de la consulta):
-  - Entrada visual $F_v$: `(1, 15, 512)` $\rightarrow$ alineada a `(1, 15, 256)`.
-  - Entrada textual $F_t$: `(1, 10, 512)` para los tokens `['<sos>', 'a', 'man', 'opens', 'the', 'door', 'of', 'a', 'car', '<eos>']` $\rightarrow$ alineada a `(1, 10, 256)`.
-  - Cross-Attention V2T: $Q_v \in \mathbb{R}^{1 \times 8 \times 15 \times 32}$, $K_t, V_t \in \mathbb{R}^{1 \times 8 \times 10 \times 32}$.
-  - Cross-Attention del Decoder: $Q_{\text{dec}} \in \mathbb{R}^{1 \times 8 \times 10 \times 32}$ (*10 Moment Queries*), $K_{\text{enc}}, V_{\text{enc}} \in \mathbb{R}^{1 \times 8 \times 15 \times 32}$.
+- **Mapas de atención extraídos del modelo oficial** (15 clips de 2 s, 10 tokens CLIP `['<sos>', 'a', 'man', 'opens', 'the', 'door', 'of', 'a', 'car', '<eos>']`; 2 capas por bloque, promedio de 8 cabezas):
+  - Fusión clip←palabra (`t2v_encoder`): `(15, 10)` por capa. El módulo atiende a las 77 posiciones de texto de CLIP; se recorta a los 10 tokens reales (el relleno está enmascarado y cada fila suma 1).
+  - Self-attention del encoder: `(15, 15)` por capa. El encoder se ejecuta dos veces (tras la fusión y dentro de HD2MR); la app muestra por defecto la pasada HD2MR, que es la memoria del decoder.
+  - Cross-attention del decoder: `(10, 15)` por capa (*10 Moment Queries* × clips).
 - **Localización obtenida con el modelo oficial:** Top-1 `[8.29 s – 19.91 s]` con **97.2 %** de confianza, correspondiente a la segunda escena (`[10–20 s]`). La curva de relevancia concentra su pico entre los clips 5 y 10.
 
 | Consulta | Top-1 predicho | Confianza | Escena real |
@@ -312,7 +312,7 @@ El video real compuesto tiene 30 segundos y tres escenas: `[0–10 s]` carro con
 | `A man opens the door of a car` | 8.29–19.91 s | 97.2 % | 10–20 s |
 | `An old man walking in the park` | 21.05–30.0 s | 99.5 % | 20–30 s |
 
-> **Nota:** las predicciones de intervalo y relevancia provienen del modelo oficial (Lighthouse + checkpoint de QVHighlights + CLIP ViT-B/32). Los mapas Q/K/V que muestra la pestaña de atención se calculan con la reimplementación didáctica de `tr_detr_model.py`, porque Lighthouse no expone esas matrices internas.
+> **Nota:** todo lo que muestra la app (intervalos, relevancia y mapas de atención) proviene del modelo oficial (Lighthouse + checkpoint de QVHighlights + CLIP ViT-B/32). Los mapas se leen con *forward hooks* sobre sus módulos de atención durante la predicción.
 
 ---
 
